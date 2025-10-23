@@ -1,0 +1,11 @@
+<resources xmlns:tools="http://schemas.android.com/tools">
+
+    <!-- Tema da aplicação (Views). Usamos M3 View, sem ActionBar -->
+    <style name="Theme.SuporteX" parent="Theme.Material3.DayNight.NoActionBar">
+        <!-- Opcional: deixar status/nav bar alinhados ao Compose -->
+        <item name="android:statusBarColor">?attr/colorSurface</item>
+        <item name="android:navigationBarColor">?attr/colorSurface</item>
+        <item name="android:windowLightStatusBar">true</item>
+    </style>
+
+</resources>

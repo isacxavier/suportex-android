@@ -1,0 +1,48 @@
+{
+  "project_info": {
+    "project_number": "603259295557",
+    "project_id": "suporte-x-19ae8",
+    "storage_bucket": "suporte-x-19ae8.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:603259295557:android:dfc6ce70b1546f97e0902c",
+        "android_client_info": {
+          "package_name": "com.suportex.app"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyD6dIFgSIX9hxrEtBXxZ_bKVBDdfdHtP_Y"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    },
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:603259295557:android:498159d24b74d0c2e0902c",
+        "android_client_info": {
+          "package_name": "com.suportex.quickview"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyD6dIFgSIX9hxrEtBXxZ_bKVBDdfdHtP_Y"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
