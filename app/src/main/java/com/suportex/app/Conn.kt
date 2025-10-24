@@ -1,5 +1,6 @@
 package com.suportex.app
 
+import com.suportex.app.data.ChatRepository
 import io.socket.client.Socket
 
 object Conn {
@@ -9,4 +10,6 @@ object Conn {
     @Volatile var socket: Socket? = null
     @Volatile var sessionId: String? = null
     @Volatile var techName: String? = null
+    @Volatile var chatRepository: ChatRepository? = null
 }
+
