@@ -41,11 +41,13 @@ import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
+import com.suportex.app.Conn
 import com.suportex.app.data.ChatRepository
 import com.suportex.app.data.model.Message
 import com.suportex.app.R
 import kotlinx.coroutines.launch
 import java.util.Locale
+import org.json.JSONObject
 
 @Composable
 fun SessionScreen(
@@ -66,6 +68,14 @@ fun SessionScreen(
 ) {
     val scope = rememberCoroutineScope()
     val chat = remember { ChatRepository() }
+    DisposableEffect(chat) {
+        Conn.chatRepository = chat
+        onDispose {
+            if (Conn.chatRepository === chat) {
+                Conn.chatRepository = null
+            }
+        }
+    }
     val focus = LocalFocusManager.current
     val ctx = LocalContext.current
 
@@ -560,8 +570,15 @@ fun SessionScreen(
                     Button(
                         onClick = {
                             if (sessionId != null && input.isNotBlank()) {
+                                val trimmed = input.trim()
                                 scope.launch {
-                                    ChatRepository().sendText(sessionId, fromId = "client", text = input.trim())
+                                    chat.sendText(sessionId, fromId = "client", text = trimmed)
+                                    val payload = JSONObject().apply {
+                                        put("sessionId", sessionId)
+                                        put("from", "client")
+                                        put("text", trimmed)
+                                    }
+                                    Conn.socket?.emit("session:chat:send", payload)
                                     input = ""
                                 }
                             }

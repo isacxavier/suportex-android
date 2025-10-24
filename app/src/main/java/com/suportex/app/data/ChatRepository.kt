@@ -33,6 +33,14 @@ class ChatRepository {
             .collection("messages").add(m).await()
     }
 
+    suspend fun upsertIncoming(sessionId: String, message: Message) {
+        val collection = db.collection("sessions").document(sessionId)
+            .collection("messages")
+        val docId = message.id.takeIf { it.isNotBlank() } ?: collection.document().id
+        val payload = message.copy(id = docId)
+        collection.document(docId).set(payload).await()
+    }
+
     suspend fun sendFile(sessionId: String, fromId: String, localUri: Uri): String {
         val ref = storage.reference
             .child("sessions/$sessionId/attachments/${System.currentTimeMillis()}")

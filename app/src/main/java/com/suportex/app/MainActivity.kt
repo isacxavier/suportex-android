@@ -3,9 +3,11 @@ package com.suportex.app
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Intent
+import android.content.IntentFilter
 import android.media.projection.MediaProjectionManager
 import android.os.Build
 import android.os.Bundle
+import android.os.BatteryManager
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -26,12 +28,21 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
 import androidx.core.content.edit
+import androidx.lifecycle.lifecycleScope
 import com.suportex.app.ui.screens.SessionScreen
+import com.suportex.app.data.model.Message
 import io.socket.client.IO
 import io.socket.client.Socket
 import okhttp3.*
+import android.net.ConnectivityManager
+import android.net.NetworkCapabilities
 import org.json.JSONObject
 import java.util.UUID
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
 
 enum class Screen { HOME, WAITING, SESSION }
 
@@ -50,9 +61,18 @@ class MainActivity : ComponentActivity() {
     private var setRequestIdFromSocket: ((String?) -> Unit)? = null
     private var setSessionIdFromSocket: ((String?) -> Unit)? = null
     private var setScreenFromSocket: ((Screen) -> Unit)? = null
+    private var setRemoteEnabledFromSocket: ((Boolean) -> Unit)? = null
+    private var setCallingFromSocket: ((Boolean) -> Unit)? = null
+    private var setCallConnectedFromSocket: ((Boolean) -> Unit)? = null
 
     private var currentSessionId: String? = null
     private lateinit var socket: Socket
+
+    private var telemetryJob: Job? = null
+    private var isSharingActive = false
+    private var remoteEnabledActive = false
+    private var callingActive = false
+    private var callConnectedActive = false
 
     // -------- Helpers --------
     @Suppress("unused")
@@ -69,6 +89,158 @@ class MainActivity : ComponentActivity() {
         val cb = getSystemService(CLIPBOARD_SERVICE) as ClipboardManager
         cb.setPrimaryClip(ClipData.newPlainText(label, text))
         Toast.makeText(this, "Copiado", Toast.LENGTH_SHORT).show()
+    }
+
+    private fun updateSharingState(active: Boolean) {
+        isSharingActive = active
+        runOnUiThread { setIsSharingFromLauncher?.invoke(active) }
+        emitTelemetry()
+    }
+
+    private fun updateRemoteState(enabled: Boolean) {
+        remoteEnabledActive = enabled
+        runOnUiThread { setRemoteEnabledFromSocket?.invoke(enabled) }
+        emitTelemetry()
+    }
+
+    private fun updateCallState(calling: Boolean, connected: Boolean) {
+        callingActive = calling
+        callConnectedActive = connected
+        runOnUiThread {
+            setCallingFromSocket?.invoke(calling)
+            setCallConnectedFromSocket?.invoke(connected)
+        }
+        emitTelemetry()
+    }
+
+    private fun emitTelemetry() {
+        val sid = currentSessionId ?: return
+        if (!this::socket.isInitialized) return
+
+        val data = JSONObject().apply {
+            put("sessionId", sid)
+            put("from", "client")
+            val status = JSONObject()
+            val battery = getBatteryLevel()
+            status.put("battery", battery ?: JSONObject.NULL)
+            status.put("net", getNetworkType())
+            status.put("sharing", isSharingActive)
+            status.put("remoteEnabled", remoteEnabledActive)
+            status.put("calling", callingActive)
+            status.put("callConnected", callConnectedActive)
+            put("data", status)
+        }
+        socket.emit("session:telemetry", data)
+    }
+
+    private fun startTelemetryLoop() {
+        telemetryJob?.cancel()
+        telemetryJob = lifecycleScope.launch(Dispatchers.IO) {
+            while (isActive) {
+                emitTelemetry()
+                delay(5_000)
+            }
+        }
+    }
+
+    private fun stopTelemetryLoop() {
+        telemetryJob?.cancel()
+        telemetryJob = null
+    }
+
+    private fun getBatteryLevel(): Int? {
+        val intent = registerReceiver(null, IntentFilter(Intent.ACTION_BATTERY_CHANGED))
+            ?: return null
+        val level = intent.getIntExtra(BatteryManager.EXTRA_LEVEL, -1)
+        val scale = intent.getIntExtra(BatteryManager.EXTRA_SCALE, -1)
+        if (level < 0 || scale <= 0) return null
+        return (level * 100) / scale
+    }
+
+    private fun getNetworkType(): String {
+        val cm = getSystemService(ConnectivityManager::class.java) ?: return "unknown"
+        val network = cm.activeNetwork ?: return "offline"
+        val caps = cm.getNetworkCapabilities(network) ?: return "unknown"
+        return when {
+            caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) -> "wifi"
+            caps.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR) -> "cell"
+            caps.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET) -> "ethernet"
+            caps.hasTransport(NetworkCapabilities.TRANSPORT_BLUETOOTH) -> "bluetooth"
+            else -> "unknown"
+        }
+    }
+
+    private fun handleIncomingChat(obj: JSONObject) {
+        val sid = currentSessionId ?: return
+        val text = obj.optString("text", "").takeIf { it.isNotBlank() }
+        val fileUrl = obj.optString("fileUrl", "").takeIf { it.isNotBlank() }
+        val audioUrl = obj.optString("audioUrl", "").takeIf { it.isNotBlank() }
+        val message = Message(
+            id = obj.optString("id", ""),
+            fromId = obj.optString("from", ""),
+            fromName = obj.optString("fromName", null).takeIf { !it.isNullOrBlank() },
+            text = text,
+            fileUrl = fileUrl,
+            audioUrl = audioUrl,
+            createdAt = obj.optLong("ts", System.currentTimeMillis())
+        )
+        lifecycleScope.launch(Dispatchers.IO) {
+            runCatching { Conn.chatRepository?.upsertIncoming(sid, message) }
+        }
+    }
+
+    private fun handleSessionCommand(obj: JSONObject) {
+        when (obj.optString("type", "")) {
+            "share_start" -> {
+                if (!isSharingActive) {
+                    runOnUiThread {
+                        setSystemMessageFromLauncher?.invoke("O técnico solicitou iniciar o compartilhamento de tela.")
+                        startScreenShareFlow()
+                    }
+                }
+            }
+            "share_stop" -> {
+                if (isSharingActive) runOnUiThread { stopScreenShare() }
+            }
+            "remote_enable" -> updateRemoteState(true)
+            "remote_disable" -> updateRemoteState(false)
+            "call_start" -> {
+                val payload = obj.optJSONObject("payload")
+                val connected = payload?.optBoolean("connected")
+                    ?: obj.optBoolean("connected", true)
+                updateCallState(true, connected)
+            }
+            "call_end" -> updateCallState(false, false)
+        }
+    }
+
+    private fun resetSessionState() {
+        isSharingActive = false
+        remoteEnabledActive = false
+        callingActive = false
+        callConnectedActive = false
+        runOnUiThread {
+            setIsSharingFromLauncher?.invoke(false)
+            setRemoteEnabledFromSocket?.invoke(false)
+            setCallingFromSocket?.invoke(false)
+            setCallConnectedFromSocket?.invoke(false)
+        }
+    }
+
+    private fun requestCallStart() {
+        updateCallState(true, false)
+    }
+
+    private fun requestCallEnd() {
+        updateCallState(false, false)
+    }
+
+    private fun finalizeSession() {
+        stopTelemetryLoop()
+        resetSessionState()
+        currentSessionId = null
+        Conn.sessionId = null
+        Conn.techName = null
     }
 
     // -------- Socket.IO --------
@@ -93,7 +265,7 @@ class MainActivity : ComponentActivity() {
             val data = (any as? JSONObject) ?: return@on
             // optString precisa de String default; usamos "" e depois tratamos vazio como null
             val reqId = data.optString("requestId", "").takeIf { it.isNotBlank() }
-            setRequestIdFromSocket?.invoke(reqId)
+            runOnUiThread { setRequestIdFromSocket?.invoke(reqId) }
         }
 
         // técnico aceitou → recebemos sessionId e (opcional) techName
@@ -105,12 +277,29 @@ class MainActivity : ComponentActivity() {
                 Conn.sessionId = sid
                 Conn.techName = tname
                 currentSessionId = sid
-                // Entrar na sala para sinalização (ANSWER/ICE virão depois, no Service)
+                resetSessionState()
+                val joinPayload = JSONObject().apply {
+                    put("sessionId", sid)
+                    put("role", "client")
+                }
+                socket.emit("session:join", joinPayload)
                 socket.emit("join", sid)
-                // Ir para a tela de sessão
-                setSessionIdFromSocket?.invoke(sid)
-                setScreenFromSocket?.invoke(Screen.SESSION)
+                startTelemetryLoop()
+                runOnUiThread {
+                    setSessionIdFromSocket?.invoke(sid)
+                    setScreenFromSocket?.invoke(Screen.SESSION)
+                }
             }
+        }
+
+        socket.on("session:chat:new") { args ->
+            val obj = args.getOrNull(0) as? JSONObject ?: return@on
+            handleIncomingChat(obj)
+        }
+
+        socket.on("session:command") { args ->
+            val obj = args.getOrNull(0) as? JSONObject ?: return@on
+            handleSessionCommand(obj)
         }
 
         socket.connect()
@@ -140,6 +329,16 @@ class MainActivity : ComponentActivity() {
         })
     }
 
+    private fun startScreenShareFlow() {
+        val sid = currentSessionId
+        if (sid.isNullOrBlank()) {
+            setSystemMessageFromLauncher?.invoke("Sessão ainda não aceita pelo técnico.")
+            return
+        }
+        val intent = mediaProjectionManager.createScreenCaptureIntent()
+        screenCaptureLauncher.launch(intent)
+    }
+
     // -------- Screen share launcher --------
     private val screenCaptureLauncher =
         registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
@@ -156,7 +355,7 @@ class MainActivity : ComponentActivity() {
                     putExtra(ScreenCaptureService.EXTRA_ROOM_CODE, sid)
                 }
                 ContextCompat.startForegroundService(this, serviceIntent)
-                setIsSharingFromLauncher?.invoke(true)
+                updateSharingState(true)
             } else {
                 setSystemMessageFromLauncher?.invoke("Permissão de captura negada.")
             }
@@ -167,7 +366,7 @@ class MainActivity : ComponentActivity() {
             action = ScreenCaptureService.ACTION_STOP
         }
         ContextCompat.startForegroundService(this, stop)
-        setIsSharingFromLauncher?.invoke(false)
+        updateSharingState(false)
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -218,6 +417,9 @@ class MainActivity : ComponentActivity() {
                         currentSessionId = sid
                     }
                     setScreenFromSocket = { scr -> current = scr }
+                    setRemoteEnabledFromSocket = { remoteEnabled = it }
+                    setCallingFromSocket = { calling = it }
+                    setCallConnectedFromSocket = { callConnected = it }
                 }
 
                 Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
@@ -251,27 +453,17 @@ class MainActivity : ComponentActivity() {
                             callConnected = callConnected,
                             systemMessage = systemMessage,
                             onSystemMessageConsumed = { systemMessage = null },
-                            onStartShare = {
-                                if (sessionId.isNullOrBlank()) {
-                                    systemMessage = "Sessão não disponível ainda."
-                                } else {
-                                    val intent = mediaProjectionManager.createScreenCaptureIntent()
-                                    screenCaptureLauncher.launch(intent)
-                                }
-                            },
+                            onStartShare = { startScreenShareFlow() },
                             onStopShare = { stopScreenShare() },
-                            onToggleRemote = { enable -> remoteEnabled = enable },
-                            onStartCall = {
-                                calling = true
-                                callConnected = false
-                                // Se for implementar áudio/voz depois, coloque a lógica aqui
-                            },
-                            onEndCall = {
-                                calling = false
-                                callConnected = false
-                            },
+                            onToggleRemote = { enable -> updateRemoteState(enable) },
+                            onStartCall = { requestCallStart() },
+                            onEndCall = { requestCallEnd() },
                             onEndSupport = {
                                 if (isSharing) stopScreenShare()
+                                finalizeSession()
+                                requestId = null
+                                sessionId = null
+                                systemMessage = null
                                 current = Screen.HOME
                             }
                         )
@@ -279,6 +471,11 @@ class MainActivity : ComponentActivity() {
                 }
             }
         }
+    }
+
+    override fun onDestroy() {
+        super.onDestroy()
+        stopTelemetryLoop()
     }
 }
 
