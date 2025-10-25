@@ -73,6 +73,7 @@ class MainActivity : ComponentActivity() {
     private var remoteEnabledActive = false
     private var callingActive = false
     private var callConnectedActive = false
+    private var shareRequestFromCommand = false
 
     // -------- Helpers --------
     @Suppress("unused")
@@ -91,6 +92,19 @@ class MainActivity : ComponentActivity() {
         Toast.makeText(this, "Copiado", Toast.LENGTH_SHORT).show()
     }
 
+    private fun sendCommand(type: String, payload: JSONObject? = null) {
+        val sid = currentSessionId ?: return
+        if (!this::socket.isInitialized) return
+
+        val command = JSONObject().apply {
+            put("sessionId", sid)
+            put("from", "client")
+            put("type", type)
+            payload?.let { put("payload", it) }
+        }
+        socket.emit("session:command", command)
+    }
+
     private fun updateSharingState(active: Boolean) {
         isSharingActive = active
         runOnUiThread { setIsSharingFromLauncher?.invoke(active) }
@@ -101,6 +115,11 @@ class MainActivity : ComponentActivity() {
         remoteEnabledActive = enabled
         runOnUiThread { setRemoteEnabledFromSocket?.invoke(enabled) }
         emitTelemetry()
+    }
+
+    private fun requestRemoteStateChange(enabled: Boolean) {
+        updateRemoteState(enabled)
+        sendCommand(if (enabled) "remote_enable" else "remote_disable")
     }
 
     private fun updateCallState(calling: Boolean, connected: Boolean) {
@@ -190,17 +209,18 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun handleSessionCommand(obj: JSONObject) {
+        val origin = obj.optString("from", "")
         when (obj.optString("type", "")) {
             "share_start" -> {
-                if (!isSharingActive) {
+                if (!isSharingActive && !origin.equals("client", ignoreCase = true)) {
                     runOnUiThread {
                         setSystemMessageFromLauncher?.invoke("O técnico solicitou iniciar o compartilhamento de tela.")
-                        startScreenShareFlow()
+                        startScreenShareFlow(fromCommand = true)
                     }
                 }
             }
             "share_stop" -> {
-                if (isSharingActive) runOnUiThread { stopScreenShare() }
+                if (isSharingActive) runOnUiThread { stopScreenShare(fromCommand = true) }
             }
             "remote_enable" -> updateRemoteState(true)
             "remote_disable" -> updateRemoteState(false)
@@ -211,6 +231,7 @@ class MainActivity : ComponentActivity() {
                 updateCallState(true, connected)
             }
             "call_end" -> updateCallState(false, false)
+            "session_end" -> handleSessionEnded(reason = obj.optString("reason", "Atendimento encerrado."))
         }
     }
 
@@ -228,10 +249,12 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun requestCallStart() {
+        sendCommand("call_start")
         updateCallState(true, false)
     }
 
     private fun requestCallEnd() {
+        sendCommand("call_end")
         updateCallState(false, false)
     }
 
@@ -241,6 +264,21 @@ class MainActivity : ComponentActivity() {
         currentSessionId = null
         Conn.sessionId = null
         Conn.techName = null
+    }
+
+    private fun handleSessionEnded(fromCommand: Boolean = true, reason: String? = null) {
+        if (!fromCommand) sendCommand("session_end")
+        if (isSharingActive) {
+            stopScreenShare(fromCommand = true)
+        }
+        shareRequestFromCommand = false
+        finalizeSession()
+        runOnUiThread {
+            setRequestIdFromSocket?.invoke(null)
+            setSessionIdFromSocket?.invoke(null)
+            setScreenFromSocket?.invoke(Screen.HOME)
+            setSystemMessageFromLauncher?.invoke(reason)
+        }
     }
 
     // -------- Socket.IO --------
@@ -273,22 +311,22 @@ class MainActivity : ComponentActivity() {
             val data = args.getOrNull(0) as? JSONObject ?: return@on
             val sid = data.optString("sessionId", "")
             val tname = data.optString("techName", "Técnico")
-            if (sid.isNotBlank()) {
-                Conn.sessionId = sid
-                Conn.techName = tname
-                currentSessionId = sid
-                resetSessionState()
-                val joinPayload = JSONObject().apply {
-                    put("sessionId", sid)
-                    put("role", "client")
-                }
-                socket.emit("session:join", joinPayload)
-                socket.emit("join", sid)
-                startTelemetryLoop()
-                runOnUiThread {
-                    setSessionIdFromSocket?.invoke(sid)
-                    setScreenFromSocket?.invoke(Screen.SESSION)
-                }
+                if (sid.isNotBlank()) {
+                    Conn.sessionId = sid
+                    Conn.techName = tname
+                    currentSessionId = sid
+                    resetSessionState()
+                    val joinPayload = JSONObject().apply {
+                        put("sessionId", sid)
+                        put("role", "client")
+                    }
+                    socket.emit("session:join", joinPayload)
+                    socket.emit("join", joinPayload)
+                    startTelemetryLoop()
+                    runOnUiThread {
+                        setSessionIdFromSocket?.invoke(sid)
+                        setScreenFromSocket?.invoke(Screen.SESSION)
+                    }
             }
         }
 
@@ -300,6 +338,11 @@ class MainActivity : ComponentActivity() {
         socket.on("session:command") { args ->
             val obj = args.getOrNull(0) as? JSONObject ?: return@on
             handleSessionCommand(obj)
+        }
+
+        socket.on("session:ended") { args ->
+            val reason = (args.getOrNull(0) as? JSONObject)?.optString("reason")
+            handleSessionEnded(reason = reason ?: "Atendimento encerrado.")
         }
 
         socket.connect()
@@ -329,12 +372,14 @@ class MainActivity : ComponentActivity() {
         })
     }
 
-    private fun startScreenShareFlow() {
+    private fun startScreenShareFlow(fromCommand: Boolean = false) {
         val sid = currentSessionId
         if (sid.isNullOrBlank()) {
+            shareRequestFromCommand = false
             setSystemMessageFromLauncher?.invoke("Sessão ainda não aceita pelo técnico.")
             return
         }
+        shareRequestFromCommand = fromCommand
         val intent = mediaProjectionManager.createScreenCaptureIntent()
         screenCaptureLauncher.launch(intent)
     }
@@ -356,17 +401,25 @@ class MainActivity : ComponentActivity() {
                 }
                 ContextCompat.startForegroundService(this, serviceIntent)
                 updateSharingState(true)
+                if (!shareRequestFromCommand) {
+                    sendCommand("share_start")
+                }
+                shareRequestFromCommand = false
             } else {
                 setSystemMessageFromLauncher?.invoke("Permissão de captura negada.")
+                shareRequestFromCommand = false
             }
         }
 
-    private fun stopScreenShare() {
+    private fun stopScreenShare(fromCommand: Boolean = false) {
         val stop = Intent(this, ScreenCaptureService::class.java).apply {
             action = ScreenCaptureService.ACTION_STOP
         }
         ContextCompat.startForegroundService(this, stop)
         updateSharingState(false)
+        if (!fromCommand) {
+            sendCommand("share_stop")
+        }
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -455,12 +508,11 @@ class MainActivity : ComponentActivity() {
                             onSystemMessageConsumed = { systemMessage = null },
                             onStartShare = { startScreenShareFlow() },
                             onStopShare = { stopScreenShare() },
-                            onToggleRemote = { enable -> updateRemoteState(enable) },
+                            onToggleRemote = { enable -> requestRemoteStateChange(enable) },
                             onStartCall = { requestCallStart() },
                             onEndCall = { requestCallEnd() },
                             onEndSupport = {
-                                if (isSharing) stopScreenShare()
-                                finalizeSession()
+                                handleSessionEnded(fromCommand = false, reason = null)
                                 requestId = null
                                 sessionId = null
                                 systemMessage = null
