@@ -149,10 +149,13 @@ class ScreenCaptureService : Service() {
                                     put("sdpMLineIndex", c.sdpMLineIndex)
                                     put("candidate", c.sdp ?: "")
                                 }
-                                socket?.emit(
-                                    "signal",
-                                    JSONObject().put("room", roomCode).put("type", "ice").put("candidate", cand)
-                                )
+                                val payload = JSONObject().apply {
+                                    put("sessionId", roomCode)
+                                    put("from", "client")
+                                    put("role", "client")
+                                    put("candidate", cand)
+                                }
+                                socket?.emit("signal:candidate", payload)
                             }
                             override fun onAddStream(p0: MediaStream?) {}
                             override fun onConnectionChange(newState: PeerConnection.PeerConnectionState?) {
@@ -201,44 +204,31 @@ class ScreenCaptureService : Service() {
                     // 🔌 Socket.IO usando a mesma base do servidor
                     socket = IO.socket(Conn.SERVER_BASE)
                     socket?.on(Socket.EVENT_CONNECT) {
-                        socket?.emit("join", roomCode)
+                        val joinPayload = JSONObject().apply {
+                            put("sessionId", roomCode)
+                            put("role", "client")
+                        }
+                        socket?.emit("join", joinPayload)
                     }
                     socket?.on("peer-joined") {
                         renegotiate(iceRestart = false)
+                    }
+                    socket?.on("signal:answer") { args ->
+                        if (args.isEmpty()) return@on
+                        val obj = args[0] as? JSONObject ?: return@on
+                        handleSignalAnswer(obj)
+                    }
+                    socket?.on("signal:candidate") { args ->
+                        if (args.isEmpty()) return@on
+                        val obj = args[0] as? JSONObject ?: return@on
+                        handleSignalCandidate(obj)
                     }
                     socket?.on("signal") { args ->
                         if (args.isEmpty()) return@on
                         val obj = args[0] as? JSONObject ?: return@on
                         when (obj.optString("type")) {
-                            "answer" -> {
-                                val sdp = obj.optString("sdp", "")
-                                if (sdp.isNotBlank()) {
-                                    peerConnection?.setRemoteDescription(
-                                        object : SdpObserverAdapter() {
-                                            override fun onSetSuccess() {
-                                                Log.d(TAG, "ANSWER aplicada")
-                                                remoteDescriptionSet = true
-                                                pendingRemoteIce.forEach { safeAddIce(it) }
-                                                pendingRemoteIce.clear()
-                                            }
-                                            override fun onSetFailure(error: String) {
-                                                Log.e(TAG, "setRemoteDescription fail: $error")
-                                            }
-                                        },
-                                        SessionDescription(SessionDescription.Type.ANSWER, sdp)
-                                    )
-                                }
-                            }
-                            "ice" -> {
-                                iceFrom(obj)?.let { cand ->
-                                    if (remoteDescriptionSet) safeAddIce(cand) else pendingRemoteIce.add(cand)
-                                }
-                            }
-                            else -> {
-                                iceFrom(obj)?.let { cand ->
-                                    if (remoteDescriptionSet) safeAddIce(cand) else pendingRemoteIce.add(cand)
-                                }
-                            }
+                            "answer" -> handleSignalAnswer(obj)
+                            else -> handleSignalCandidate(obj)
                         }
                     }
                     socket?.connect()
@@ -305,13 +295,13 @@ class ScreenCaptureService : Service() {
             override fun onCreateSuccess(sdp: SessionDescription) {
                 pc.setLocalDescription(object : SdpObserverAdapter() {
                     override fun onSetSuccess() {
-                        socket?.emit(
-                            "signal",
-                            JSONObject()
-                                .put("room", roomCode)
-                                .put("type", "offer")
-                                .put("sdp", sdp.description)
-                        )
+                        val payload = JSONObject().apply {
+                            put("sessionId", roomCode)
+                            put("from", "client")
+                            put("role", "client")
+                            put("sdp", sdp.description)
+                        }
+                        socket?.emit("signal:offer", payload)
                         Log.d(TAG, "Offer enviada (${sdp.description.length} chars)")
                     }
                     override fun onSetFailure(error: String) {
@@ -328,6 +318,32 @@ class ScreenCaptureService : Service() {
     private fun safeAddIce(cand: IceCandidate) {
         try { peerConnection?.addIceCandidate(cand) } catch (t: Throwable) {
             Log.e(TAG, "addIceCandidate error", t)
+        }
+    }
+
+    private fun handleSignalAnswer(obj: JSONObject) {
+        val sdp = obj.optString("sdp", "")
+        if (sdp.isBlank()) return
+        peerConnection?.setRemoteDescription(
+            object : SdpObserverAdapter() {
+                override fun onSetSuccess() {
+                    Log.d(TAG, "ANSWER aplicada")
+                    remoteDescriptionSet = true
+                    pendingRemoteIce.forEach { safeAddIce(it) }
+                    pendingRemoteIce.clear()
+                }
+
+                override fun onSetFailure(error: String) {
+                    Log.e(TAG, "setRemoteDescription fail: $error")
+                }
+            },
+            SessionDescription(SessionDescription.Type.ANSWER, sdp)
+        )
+    }
+
+    private fun handleSignalCandidate(obj: JSONObject) {
+        iceFrom(obj)?.let { cand ->
+            if (remoteDescriptionSet) safeAddIce(cand) else pendingRemoteIce.add(cand)
         }
     }
 
@@ -514,6 +530,13 @@ class ScreenCaptureService : Service() {
         surfaceTextureHelper = null
         try { peerConnection?.close() } catch (_: Exception) {}
         peerConnection = null
+        try {
+            socket?.off(Socket.EVENT_CONNECT)
+            socket?.off("peer-joined")
+            socket?.off("signal:answer")
+            socket?.off("signal:candidate")
+            socket?.off("signal")
+        } catch (_: Exception) {}
         try { socket?.disconnect() } catch (_: Exception) {}
         try { socket?.close() } catch (_: Exception) {}
         socket = null

@@ -23,6 +23,7 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.scale
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
@@ -45,8 +46,8 @@ import com.suportex.app.Conn
 import com.suportex.app.data.ChatRepository
 import com.suportex.app.data.model.Message
 import com.suportex.app.R
-import kotlinx.coroutines.launch
 import java.util.Locale
+import java.util.UUID
 import org.json.JSONObject
 
 @Composable
@@ -66,7 +67,6 @@ fun SessionScreen(
     onEndCall: () -> Unit,
     onEndSupport: () -> Unit
 ) {
-    val scope = rememberCoroutineScope()
     val chat = remember { ChatRepository() }
     DisposableEffect(chat) {
         Conn.chatRepository = chat
@@ -128,10 +128,33 @@ fun SessionScreen(
 
     // mensagens
     var messages by remember { mutableStateOf<List<Message>>(emptyList()) }
+    val pendingMessages = remember { mutableStateListOf<Message>() }
     LaunchedEffect(sessionId) {
         if (sessionId != null) {
             chat.observeMessages(sessionId).collect { messages = it }
+        } else {
+            messages = emptyList()
+            pendingMessages.clear()
         }
+    }
+
+    LaunchedEffect(messages) {
+        val deliveredIds = messages.mapNotNull { it.id.takeIf(String::isNotBlank) }.toSet()
+        if (deliveredIds.isNotEmpty()) {
+            pendingMessages.removeAll { it.id in deliveredIds }
+        }
+    }
+
+    val combinedMessages by remember {
+        derivedStateOf {
+            val deliveredIds = messages.map { it.id }.toSet()
+            val pendings = pendingMessages.filter { it.id !in deliveredIds }
+            (messages + pendings).sortedBy { it.createdAt }
+        }
+    }
+
+    val pendingIds by remember {
+        derivedStateOf { pendingMessages.map { it.id }.toSet() }
     }
 
     // paleta
@@ -472,7 +495,7 @@ fun SessionScreen(
 
                 // Lista de mensagens
                 val listState = rememberLazyListState()
-                val uiMessages = remember(messages) { messages.asReversed() } // novas embaixo
+                val uiMessages = remember(combinedMessages) { combinedMessages.asReversed() } // novas embaixo
 
                 LazyColumn(
                     state = listState,
@@ -483,18 +506,27 @@ fun SessionScreen(
                     contentPadding = PaddingValues(horizontal = 14.dp, vertical = 12.dp),
                     verticalArrangement = Arrangement.spacedBy(10.dp, alignment = Alignment.Bottom) // << fixa no fundo
                 ) {
-                    items(uiMessages, key = { it.id }) { m ->   // << usa uiMessages aqui
+                    items(
+                        uiMessages,
+                        key = { message ->
+                            val id = message.id
+                            if (id.isNotBlank()) id else "${message.createdAt}-${message.hashCode()}"
+                        }
+                    ) { m ->   // << usa uiMessages aqui
                         val isOutgoing = m.fromId == "client" // você -> amarelo
                         val bubbleColor =
                             if (isOutgoing) Color(0xFFFFF4C1) else Color(0xFFF1F3F6)
                         val align =
                             if (isOutgoing) Arrangement.End else Arrangement.Start
+                        val isPending = pendingIds.contains(m.id)
+                        val bubbleModifier = if (isPending) Modifier.alpha(0.6f) else Modifier
 
                         Row(
                             modifier = Modifier.fillMaxWidth(),
                             horizontalArrangement = align
                         ) {
                             Surface(
+                                modifier = bubbleModifier,
                                 shape = RoundedCornerShape(16.dp),
                                 color = bubbleColor,
                                 tonalElevation = 0.dp,
@@ -571,16 +603,26 @@ fun SessionScreen(
                         onClick = {
                             if (sessionId != null && input.isNotBlank()) {
                                 val trimmed = input.trim()
-                                scope.launch {
-                                    chat.sendText(sessionId, fromId = "client", text = trimmed)
-                                    val payload = JSONObject().apply {
-                                        put("sessionId", sessionId)
-                                        put("from", "client")
-                                        put("text", trimmed)
-                                    }
-                                    Conn.socket?.emit("session:chat:send", payload)
-                                    input = ""
+                                val messageId = UUID.randomUUID().toString()
+                                val pending = Message(
+                                    id = messageId,
+                                    fromId = "client",
+                                    text = trimmed,
+                                    createdAt = System.currentTimeMillis()
+                                )
+                                pendingMessages.removeAll { it.id == pending.id }
+                                pendingMessages.add(pending)
+                                val payload = JSONObject().apply {
+                                    put("sessionId", sessionId)
+                                    put("from", "client")
+                                    put("id", messageId)
+                                    put("text", trimmed)
                                 }
+                                Conn.socket?.emit("session:chat:send", payload)
+                                input = ""
+                                focus.clearFocus()
+                            } else if (sessionId == null) {
+                                toastOnce("Sessão ainda não aceita pelo técnico.")
                             }
                         },
                         enabled = sessionId != null && input.isNotBlank(),
