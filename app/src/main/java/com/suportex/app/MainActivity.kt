@@ -288,7 +288,7 @@ class MainActivity : ComponentActivity() {
         val message = Message(
             id = obj.optString("id", ""),
             from = obj.optString("from", ""),
-            fromName = obj.optString("fromName", null).takeIf { !it.isNullOrBlank() },
+            fromName = obj.optString("fromName").takeIf { it.isNotBlank() },
             text = text,
             fileUrl = fileUrl,
             audioUrl = audioUrl,
