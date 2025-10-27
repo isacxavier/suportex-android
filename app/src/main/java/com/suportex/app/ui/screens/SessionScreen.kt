@@ -513,7 +513,7 @@ fun SessionScreen(
                             id.ifBlank { "${message.createdAt}-${message.hashCode()}" }
                         }
                     ) { m ->   // << usa uiMessages aqui
-                        val isOutgoing = m.fromId == "client" // você -> amarelo
+                        val isOutgoing = m.from == "client" // você -> amarelo
                         val bubbleColor =
                             if (isOutgoing) Color(0xFFFFF4C1) else Color(0xFFF1F3F6)
                         val align =
@@ -606,7 +606,7 @@ fun SessionScreen(
                                 val messageId = UUID.randomUUID().toString()
                                 val pending = Message(
                                     id = messageId,
-                                    fromId = "client",
+                                    from = "client",
                                     text = trimmed,
                                     createdAt = System.currentTimeMillis()
                                 )
