@@ -361,15 +361,32 @@ class MainActivity : ComponentActivity() {
         val sid = currentSessionId
         val origin = if (fromCommand) "tech" else "client"
         if (!fromCommand) sendCommand("end")
+
         sid?.let {
             logSessionEvent("end", origin = origin, extras = mapOf("reason" to reason))
             lifecycleScope.launch(Dispatchers.IO) {
                 runCatching { sessionRepository.markSessionClosed(it) }
             }
         }
-        if (isSharingActive) {
+
+        val shareWasActive = isSharingActive
+        val remoteWasActive = remoteEnabledActive
+        val callWasActive = callingActive || callConnectedActive
+
+        if (callWasActive) {
+            updateCallState(false, false, origin = origin)
+        }
+        if (remoteWasActive) {
+            updateRemoteState(false, origin = origin)
+        }
+        if (shareWasActive) {
             stopScreenShare(fromCommand = true, originOverride = origin)
         }
+
+        if (!shareWasActive && !remoteWasActive && !callWasActive) {
+            emitTelemetry()
+        }
+
         shareRequestFromCommand = false
         finalizeSession()
         runOnUiThread {
