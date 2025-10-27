@@ -510,7 +510,7 @@ fun SessionScreen(
                         uiMessages,
                         key = { message ->
                             val id = message.id
-                            if (id.isNotBlank()) id else "${message.createdAt}-${message.hashCode()}"
+                            id.ifBlank { "${message.createdAt}-${message.hashCode()}" }
                         }
                     ) { m ->   // << usa uiMessages aqui
                         val isOutgoing = m.fromId == "client" // você -> amarelo
