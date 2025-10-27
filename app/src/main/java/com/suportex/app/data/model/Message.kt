@@ -2,7 +2,7 @@ package com.suportex.app.data.model
 
 data class Message(
     val id: String = "",
-    val fromId: String = "",
+    val from: String = "",
     val fromName: String? = null,
     val text: String? = null,
     val fileUrl: String? = null,

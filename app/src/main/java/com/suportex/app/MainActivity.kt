@@ -29,8 +29,13 @@ import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
 import androidx.core.content.edit
 import androidx.lifecycle.lifecycleScope
-import com.suportex.app.ui.screens.SessionScreen
 import com.suportex.app.data.model.Message
+import com.suportex.app.data.SessionClientInfo
+import com.suportex.app.data.SessionRepository
+import com.suportex.app.data.SessionState
+import com.suportex.app.data.SessionTelemetry
+import com.suportex.app.data.SessionTechInfo
+import com.suportex.app.ui.screens.SessionScreen
 import io.socket.client.IO
 import io.socket.client.Socket
 import okhttp3.*
@@ -52,6 +57,8 @@ class MainActivity : ComponentActivity() {
 
     // (mantido só para cancelar request por HTTP, se desejar)
     private val http = OkHttpClient()
+
+    private val sessionRepository = SessionRepository()
 
     // Bridges Activity -> Compose (já existiam)
     private var setIsSharingFromLauncher: ((Boolean) -> Unit)? = null
@@ -105,30 +112,99 @@ class MainActivity : ComponentActivity() {
         socket.emit("session:command", command)
     }
 
-    private fun updateSharingState(active: Boolean) {
+    private fun buildSessionStateSnapshot(): SessionState = SessionState(
+        sharing = isSharingActive,
+        remoteEnabled = remoteEnabledActive,
+        calling = callingActive,
+        callConnected = callConnectedActive
+    )
+
+    private fun buildTelemetrySnapshot(battery: Int?, net: String?): SessionTelemetry = SessionTelemetry(
+        battery = battery,
+        net = net,
+        sharing = isSharingActive,
+        remoteEnabled = remoteEnabledActive,
+        calling = callingActive,
+        callConnected = callConnectedActive
+    )
+
+    private fun pushSessionState(telemetry: SessionTelemetry? = null) {
+        val sid = currentSessionId ?: return
+        val state = buildSessionStateSnapshot()
+        lifecycleScope.launch(Dispatchers.IO) {
+            runCatching { sessionRepository.updateRealtimeState(sid, state, telemetry) }
+        }
+    }
+
+    private fun logSessionEvent(
+        type: String,
+        origin: String? = null,
+        extras: Map<String, Any?> = emptyMap()
+    ) {
+        val sid = currentSessionId ?: return
+        val payload = buildMap<String, Any?> {
+            origin?.let { put("origin", it) }
+            extras.forEach { (key, value) ->
+                if (value != null) put(key, value)
+            }
+        }.takeIf { it.isNotEmpty() }
+        lifecycleScope.launch(Dispatchers.IO) {
+            runCatching { sessionRepository.addEvent(sid, type, payload = payload) }
+        }
+    }
+
+    private fun registerSessionStart(sessionId: String, techName: String?) {
+        val clientInfo = SessionClientInfo(
+            deviceModel = (Build.MODEL ?: Build.DEVICE ?: "Android"),
+            androidVersion = Build.VERSION.RELEASE ?: Build.VERSION.SDK_INT.toString()
+        )
+        val techInfo = techName?.takeIf { it.isNotBlank() }?.let { SessionTechInfo(name = it) }
+        lifecycleScope.launch(Dispatchers.IO) {
+            runCatching { sessionRepository.startSession(sessionId, clientInfo, techInfo) }
+        }
+    }
+
+    private fun updateSharingState(active: Boolean, origin: String) {
+        val previous = isSharingActive
         isSharingActive = active
         runOnUiThread { setIsSharingFromLauncher?.invoke(active) }
+        if (previous != active) {
+            logSessionEvent(if (active) "share_start" else "share_stop", origin = origin)
+        }
+        pushSessionState()
         emitTelemetry()
     }
 
-    private fun updateRemoteState(enabled: Boolean) {
+    private fun updateRemoteState(enabled: Boolean, origin: String) {
+        val previous = remoteEnabledActive
         remoteEnabledActive = enabled
         runOnUiThread { setRemoteEnabledFromSocket?.invoke(enabled) }
+        if (previous != enabled) {
+            logSessionEvent(if (enabled) "remote_enable" else "remote_revoke", origin = origin)
+        }
+        pushSessionState()
         emitTelemetry()
     }
 
     private fun requestRemoteStateChange(enabled: Boolean) {
-        updateRemoteState(enabled)
-        sendCommand(if (enabled) "remote_enable" else "remote_disable")
+        updateRemoteState(enabled, origin = "client")
+        sendCommand(if (enabled) "remote_enable" else "remote_revoke")
     }
 
-    private fun updateCallState(calling: Boolean, connected: Boolean) {
+    private fun updateCallState(calling: Boolean, connected: Boolean, origin: String) {
+        val previousCalling = callingActive
         callingActive = calling
         callConnectedActive = connected
         runOnUiThread {
             setCallingFromSocket?.invoke(calling)
             setCallConnectedFromSocket?.invoke(connected)
         }
+        if (!previousCalling && calling) {
+            logSessionEvent("call_start", origin = origin, extras = mapOf("connected" to connected))
+        } else if (previousCalling && !calling) {
+            logSessionEvent("call_end", origin = origin)
+        }
+        pushSessionState()
         emitTelemetry()
     }
 
@@ -136,13 +212,14 @@ class MainActivity : ComponentActivity() {
         val sid = currentSessionId ?: return
         if (!this::socket.isInitialized) return
 
+        val battery = getBatteryLevel()
+        val network = getNetworkType()
         val data = JSONObject().apply {
             put("sessionId", sid)
             put("from", "client")
             val status = JSONObject()
-            val battery = getBatteryLevel()
             status.put("battery", battery ?: JSONObject.NULL)
-            status.put("net", getNetworkType())
+            status.put("net", network)
             status.put("sharing", isSharingActive)
             status.put("remoteEnabled", remoteEnabledActive)
             status.put("calling", callingActive)
@@ -150,6 +227,19 @@ class MainActivity : ComponentActivity() {
             put("data", status)
         }
         socket.emit("session:telemetry", data)
+        logSessionEvent(
+            type = "telemetry",
+            origin = "client",
+            extras = mapOf(
+                "battery" to battery,
+                "net" to network,
+                "sharing" to isSharingActive,
+                "remoteEnabled" to remoteEnabledActive,
+                "calling" to callingActive,
+                "callConnected" to callConnectedActive
+            )
+        )
+        pushSessionState(buildTelemetrySnapshot(battery, network))
     }
 
     private fun startTelemetryLoop() {
@@ -194,14 +284,15 @@ class MainActivity : ComponentActivity() {
         val text = obj.optString("text", "").takeIf { it.isNotBlank() }
         val fileUrl = obj.optString("fileUrl", "").takeIf { it.isNotBlank() }
         val audioUrl = obj.optString("audioUrl", "").takeIf { it.isNotBlank() }
+        val createdAt = obj.optLong("ts", obj.optLong("createdAt", System.currentTimeMillis()))
         val message = Message(
             id = obj.optString("id", ""),
-            fromId = obj.optString("from", ""),
+            from = obj.optString("from", ""),
             fromName = obj.optString("fromName", null).takeIf { !it.isNullOrBlank() },
             text = text,
             fileUrl = fileUrl,
             audioUrl = audioUrl,
-            createdAt = obj.optLong("ts", System.currentTimeMillis())
+            createdAt = createdAt
         )
         lifecycleScope.launch(Dispatchers.IO) {
             runCatching { Conn.chatRepository?.upsertIncoming(sid, message) }
@@ -222,16 +313,16 @@ class MainActivity : ComponentActivity() {
             "share_stop" -> {
                 if (isSharingActive) runOnUiThread { stopScreenShare(fromCommand = true) }
             }
-            "remote_enable" -> updateRemoteState(true)
-            "remote_disable" -> updateRemoteState(false)
+            "remote_enable" -> updateRemoteState(true, origin = "tech")
+            "remote_disable", "remote_revoke" -> updateRemoteState(false, origin = "tech")
             "call_start" -> {
                 val payload = obj.optJSONObject("payload")
                 val connected = payload?.optBoolean("connected")
                     ?: obj.optBoolean("connected", true)
-                updateCallState(true, connected)
+                updateCallState(true, connected, origin = "tech")
             }
-            "call_end" -> updateCallState(false, false)
-            "session_end" -> handleSessionEnded(reason = obj.optString("reason", "Atendimento encerrado."))
+            "call_end" -> updateCallState(false, false, origin = "tech")
+            "session_end", "end" -> handleSessionEnded(reason = obj.optString("reason", "Atendimento encerrado."))
         }
     }
 
@@ -250,12 +341,12 @@ class MainActivity : ComponentActivity() {
 
     private fun requestCallStart() {
         sendCommand("call_start")
-        updateCallState(true, false)
+        updateCallState(true, false, origin = "client")
     }
 
     private fun requestCallEnd() {
         sendCommand("call_end")
-        updateCallState(false, false)
+        updateCallState(false, false, origin = "client")
     }
 
     private fun finalizeSession() {
@@ -267,9 +358,17 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun handleSessionEnded(fromCommand: Boolean = true, reason: String? = null) {
-        if (!fromCommand) sendCommand("session_end")
+        val sid = currentSessionId
+        val origin = if (fromCommand) "tech" else "client"
+        if (!fromCommand) sendCommand("end")
+        sid?.let {
+            logSessionEvent("end", origin = origin, extras = mapOf("reason" to reason))
+            lifecycleScope.launch(Dispatchers.IO) {
+                runCatching { sessionRepository.markSessionClosed(it) }
+            }
+        }
         if (isSharingActive) {
-            stopScreenShare(fromCommand = true)
+            stopScreenShare(fromCommand = true, originOverride = origin)
         }
         shareRequestFromCommand = false
         finalizeSession()
@@ -316,6 +415,8 @@ class MainActivity : ComponentActivity() {
                     Conn.techName = tname
                     currentSessionId = sid
                     resetSessionState()
+                    registerSessionStart(sid, tname)
+                    pushSessionState()
                     val joinPayload = JSONObject().apply {
                         put("sessionId", sid)
                         put("role", "client")
@@ -400,7 +501,8 @@ class MainActivity : ComponentActivity() {
                     putExtra(ScreenCaptureService.EXTRA_ROOM_CODE, sid)
                 }
                 ContextCompat.startForegroundService(this, serviceIntent)
-                updateSharingState(true)
+                val origin = if (shareRequestFromCommand) "tech" else "client"
+                updateSharingState(true, origin = origin)
                 if (!shareRequestFromCommand) {
                     sendCommand("share_start")
                 }
@@ -411,12 +513,13 @@ class MainActivity : ComponentActivity() {
             }
         }
 
-    private fun stopScreenShare(fromCommand: Boolean = false) {
+    private fun stopScreenShare(fromCommand: Boolean = false, originOverride: String? = null) {
         val stop = Intent(this, ScreenCaptureService::class.java).apply {
             action = ScreenCaptureService.ACTION_STOP
         }
         ContextCompat.startForegroundService(this, stop)
-        updateSharingState(false)
+        val origin = originOverride ?: if (fromCommand) "tech" else "client"
+        updateSharingState(false, origin = origin)
         if (!fromCommand) {
             sendCommand("share_stop")
         }

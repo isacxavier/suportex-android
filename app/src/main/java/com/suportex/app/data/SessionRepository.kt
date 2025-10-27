@@ -2,9 +2,6 @@ package com.suportex.app.data
 
 import com.google.android.gms.tasks.Task
 import com.google.firebase.firestore.SetOptions
-import com.suportex.app.data.model.Session
-import kotlinx.coroutines.channels.awaitClose
-import kotlinx.coroutines.flow.callbackFlow
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
@@ -12,46 +9,119 @@ import kotlin.coroutines.resumeWithException
 class SessionRepository {
     private val db = FirebaseDataSource.db
 
-    fun observeSession(sessionId: String) = callbackFlow<Session?> {
-        val reg = db.collection("sessions").document(sessionId)
-            .addSnapshotListener { snap, _ ->
-                trySend(snap?.toObject(Session::class.java)?.copy(id = sessionId))
-            }
-        awaitClose { reg.remove() }
-    }
-
-    suspend fun upsertSession(session: Session) {
-        db.collection("sessions").document(session.id)
-            .set(session, SetOptions.merge()).await()
-    }
-
-    suspend fun updateSharing(sessionId: String, sharing: Boolean) {
+    suspend fun startSession(
+        sessionId: String,
+        client: SessionClientInfo,
+        tech: SessionTechInfo?
+    ) {
+        val now = System.currentTimeMillis()
+        val payload = buildMap<String, Any> {
+            put("createdAt", now)
+            put("status", "active")
+            put("client", client.toMap())
+            tech?.toMap()?.let { put("tech", it) }
+        }
         db.collection("sessions").document(sessionId)
-            .update(mapOf("sharing" to sharing)).await()
+            .set(payload, SetOptions.merge()).await()
     }
 
-    suspend fun updateRemote(sessionId: String, enabled: Boolean) {
+    suspend fun markSessionClosed(sessionId: String) {
+        val payload = mapOf(
+            "status" to "closed",
+            "closedAt" to System.currentTimeMillis()
+        )
         db.collection("sessions").document(sessionId)
-            .update(mapOf("remoteEnabled" to enabled)).await()
+            .set(payload, SetOptions.merge()).await()
     }
 
-    suspend fun startCall(sessionId: String) {
+    suspend fun updateRealtimeState(
+        sessionId: String,
+        state: SessionState,
+        telemetry: SessionTelemetry? = null
+    ) {
+        val data = mutableMapOf<String, Any>("state" to state.toMap())
+        telemetry?.toMap()?.let { data["telemetry"] = it }
         db.collection("sessions").document(sessionId)
-            .update(mapOf("callState" to "ringing")).await()
+            .set(data, SetOptions.merge()).await()
     }
 
-    suspend fun endCall(sessionId: String) {
+    suspend fun addEvent(
+        sessionId: String,
+        type: String,
+        timestamp: Long = System.currentTimeMillis(),
+        payload: Map<String, Any?>? = null
+    ) {
+        val data = mutableMapOf<String, Any>(
+            "ts" to timestamp,
+            "type" to type
+        )
+        payload?.let { data["payload"] = cleanPayload(it) }
         db.collection("sessions").document(sessionId)
-            .update(mapOf("callState" to "ended")).await()
+            .collection("events")
+            .add(data).await()
     }
 
-    suspend fun endSession(sessionId: String) {
-        db.collection("sessions").document(sessionId)
-            .update(mapOf("status" to "ended")).await()
+    private fun cleanPayload(payload: Map<String, Any?>): Map<String, Any?> {
+        return payload.filterValues { it != null }
     }
 }
 
-/* ---- Task<T>.await sem dependências extras ---- */
+data class SessionClientInfo(
+    val deviceModel: String?,
+    val androidVersion: String?
+) {
+    fun toMap(): Map<String, Any> = buildMap {
+        deviceModel?.let { put("deviceModel", it) }
+        androidVersion?.let { put("androidVersion", it) }
+    }
+}
+
+data class SessionTechInfo(
+    val uid: String? = null,
+    val name: String? = null
+) {
+    fun toMap(): Map<String, Any?> = mapOf(
+        "uid" to uid,
+        "name" to name
+    ).filterValues { it != null }
+}
+
+data class SessionState(
+    val sharing: Boolean,
+    val remoteEnabled: Boolean,
+    val calling: Boolean,
+    val callConnected: Boolean,
+    val updatedAt: Long = System.currentTimeMillis()
+) {
+    fun toMap(): Map<String, Any> = mapOf(
+        "sharing" to sharing,
+        "remoteEnabled" to remoteEnabled,
+        "calling" to calling,
+        "callConnected" to callConnected,
+        "updatedAt" to updatedAt
+    )
+}
+
+data class SessionTelemetry(
+    val battery: Int?,
+    val net: String?,
+    val sharing: Boolean,
+    val remoteEnabled: Boolean,
+    val calling: Boolean,
+    val callConnected: Boolean,
+    val updatedAt: Long = System.currentTimeMillis()
+) {
+    fun toMap(): Map<String, Any> = buildMap {
+        battery?.let { put("battery", it) }
+        net?.let { put("net", it) }
+        put("sharing", sharing)
+        put("remoteEnabled", remoteEnabled)
+        put("calling", calling)
+        put("callConnected", callConnected)
+        put("updatedAt", updatedAt)
+    }
+}
+
 private suspend fun <T> Task<T>.await(): T =
     suspendCancellableCoroutine { cont ->
         addOnCompleteListener { task ->
