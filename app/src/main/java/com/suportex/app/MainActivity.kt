@@ -313,15 +313,15 @@ class MainActivity : ComponentActivity() {
             "share_stop" -> {
                 if (isSharingActive) runOnUiThread { stopScreenShare(fromCommand = true) }
             }
-            "remote_enable" -> updateRemoteState(true, origin = "tech")
-            "remote_disable", "remote_revoke" -> updateRemoteState(false, origin = "tech")
+            "remote_enable" -> updateRemoteState(enabled = true, origin = "tech")
+            "remote_disable", "remote_revoke" -> updateRemoteState(enabled = false, origin = "tech")
             "call_start" -> {
                 val payload = obj.optJSONObject("payload")
                 val connected = payload?.optBoolean("connected")
                     ?: obj.optBoolean("connected", true)
-                updateCallState(true, connected, origin = "tech")
+                updateCallState(calling = true, connected = connected, origin = "tech")
             }
-            "call_end" -> updateCallState(false, false, origin = "tech")
+            "call_end" -> updateCallState(calling = false, connected = false, origin = "tech")
             "session_end", "end" -> handleSessionEnded(reason = obj.optString("reason", "Atendimento encerrado."))
         }
     }
@@ -341,12 +341,12 @@ class MainActivity : ComponentActivity() {
 
     private fun requestCallStart() {
         sendCommand("call_start")
-        updateCallState(true, false, origin = "client")
+        updateCallState(calling = true, connected = false, origin = "client")
     }
 
     private fun requestCallEnd() {
         sendCommand("call_end")
-        updateCallState(false, false, origin = "client")
+        updateCallState(calling = false, connected = false, origin = "client")
     }
 
     private fun finalizeSession() {
@@ -374,10 +374,10 @@ class MainActivity : ComponentActivity() {
         val callWasActive = callingActive || callConnectedActive
 
         if (callWasActive) {
-            updateCallState(false, false, origin = origin)
+            updateCallState(calling = false, connected = false, origin = origin)
         }
         if (remoteWasActive) {
-            updateRemoteState(false, origin = origin)
+            updateRemoteState(enabled = false, origin = origin)
         }
         if (shareWasActive) {
             stopScreenShare(fromCommand = true, originOverride = origin)
@@ -519,7 +519,7 @@ class MainActivity : ComponentActivity() {
                 }
                 ContextCompat.startForegroundService(this, serviceIntent)
                 val origin = if (shareRequestFromCommand) "tech" else "client"
-                updateSharingState(true, origin = origin)
+                updateSharingState(active = true, origin = origin)
                 if (!shareRequestFromCommand) {
                     sendCommand("share_start")
                 }
@@ -536,7 +536,7 @@ class MainActivity : ComponentActivity() {
         }
         ContextCompat.startForegroundService(this, stop)
         val origin = originOverride ?: if (fromCommand) "tech" else "client"
-        updateSharingState(false, origin = origin)
+        updateSharingState(active = false, origin = origin)
         if (!fromCommand) {
             sendCommand("share_stop")
         }
