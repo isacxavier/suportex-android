@@ -520,9 +520,6 @@ class MainActivity : ComponentActivity() {
                 ContextCompat.startForegroundService(this, serviceIntent)
                 val origin = if (shareRequestFromCommand) "tech" else "client"
                 updateSharingState(active = true, origin = origin)
-                if (!shareRequestFromCommand) {
-                    sendCommand("share_start")
-                }
                 shareRequestFromCommand = false
             } else {
                 setSystemMessageFromLauncher?.invoke("Permissão de captura negada.")
@@ -537,9 +534,6 @@ class MainActivity : ComponentActivity() {
         ContextCompat.startForegroundService(this, stop)
         val origin = originOverride ?: if (fromCommand) "tech" else "client"
         updateSharingState(active = false, origin = origin)
-        if (!fromCommand) {
-            sendCommand("share_stop")
-        }
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
