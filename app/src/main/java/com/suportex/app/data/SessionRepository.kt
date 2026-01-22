@@ -8,12 +8,14 @@ import kotlin.coroutines.resumeWithException
 
 class SessionRepository {
     private val db = FirebaseDataSource.db
+    private val authRepository = AuthRepository()
 
     suspend fun startSession(
         sessionId: String,
         client: SessionClientInfo,
         tech: SessionTechInfo?
     ) {
+        authRepository.ensureAnonAuth()
         val now = System.currentTimeMillis()
         val payload = buildMap<String, Any> {
             put("createdAt", now)
@@ -39,6 +41,7 @@ class SessionRepository {
         state: SessionState,
         telemetry: SessionTelemetry? = null
     ) {
+        authRepository.ensureAnonAuth()
         val data = mutableMapOf<String, Any>("state" to state.toMap())
         telemetry?.toMap()?.let { data["telemetry"] = it }
         db.collection("sessions").document(sessionId)
@@ -51,6 +54,7 @@ class SessionRepository {
         timestamp: Long = System.currentTimeMillis(),
         payload: Map<String, Any?>? = null
     ) {
+        authRepository.ensureAnonAuth()
         val data = mutableMapOf<String, Any>(
             "ts" to timestamp,
             "type" to type
