@@ -13,6 +13,7 @@ import kotlin.coroutines.resumeWithException
 class ChatRepository {
     private val db = FirebaseDataSource.db
     private val storage = FirebaseDataSource.storage
+    private val authRepository = AuthRepository()
 
     fun observeMessages(sessionId: String) = callbackFlow<List<Message>> {
         val reg = db.collection("sessions").document(sessionId)
@@ -40,6 +41,7 @@ class ChatRepository {
     }
 
     suspend fun sendText(sessionId: String, from: String, text: String) {
+        authRepository.ensureAnonAuth()
         val timestamp = System.currentTimeMillis()
         val payload = buildMessagePayload(
             from = from,
@@ -54,6 +56,7 @@ class ChatRepository {
     }
 
     suspend fun upsertIncoming(sessionId: String, message: Message) {
+        authRepository.ensureAnonAuth()
         val collection = db.collection("sessions").document(sessionId)
             .collection("messages")
         val docId = message.id.takeIf { it.isNotBlank() } ?: collection.document().id
@@ -69,6 +72,7 @@ class ChatRepository {
     }
 
     suspend fun sendFile(sessionId: String, from: String, localUri: Uri): String {
+        authRepository.ensureAnonAuth()
         val timestamp = System.currentTimeMillis()
         val ref = storage.reference
             .child("sessions/$sessionId/attachments/$timestamp")
