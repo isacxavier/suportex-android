@@ -15,19 +15,22 @@ class SessionRepository {
         client: SessionClientInfo,
         tech: SessionTechInfo?
     ) {
-        authRepository.ensureAnonAuth()
+        val uid = authRepository.ensureAnonAuth()
         val now = System.currentTimeMillis()
         val payload = buildMap<String, Any> {
             put("createdAt", now)
             put("status", "active")
             put("client", client.toMap())
+            put("clientUid", uid)
             tech?.toMap()?.let { put("tech", it) }
+            tech?.uid?.let { put("techUid", it) }
         }
         db.collection("sessions").document(sessionId)
             .set(payload, SetOptions.merge()).await()
     }
 
     suspend fun markSessionClosed(sessionId: String) {
+        authRepository.ensureAnonAuth()
         val payload = mapOf(
             "status" to "closed",
             "closedAt" to System.currentTimeMillis()
