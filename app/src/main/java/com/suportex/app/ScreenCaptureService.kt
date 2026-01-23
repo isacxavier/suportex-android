@@ -13,8 +13,10 @@ import android.os.IBinder
 import android.os.Looper
 import android.util.Log
 import androidx.core.app.NotificationCompat
-import io.socket.client.IO
-import io.socket.client.Socket
+import com.google.firebase.firestore.DocumentChange
+import com.google.firebase.firestore.FieldValue
+import com.google.firebase.firestore.ListenerRegistration
+import com.suportex.app.data.FirebaseDataSource
 import org.json.JSONObject
 import org.webrtc.*
 import java.nio.ByteBuffer
@@ -49,9 +51,11 @@ class ScreenCaptureService : Service() {
     private var dataChannel: DataChannel? = null
     private var certificates: RtcCertificatePem? = null
 
-    // Sinalização
-    private var socket: Socket? = null
+    // Sinalização (Firestore)
+    private val db = FirebaseDataSource.db
+    private var eventsListener: ListenerRegistration? = null
     private var roomCode: String = ""
+    private val handledEventIds = mutableSetOf<String>()
 
     // Keep-alive
     private val mainHandler = Handler(Looper.getMainLooper())
@@ -144,18 +148,7 @@ class ScreenCaptureService : Service() {
                         },
                         object : PeerConnection.Observer {
                             override fun onIceCandidate(c: IceCandidate) {
-                                val cand = JSONObject().apply {
-                                    putOpt("sdpMid", c.sdpMid)
-                                    put("sdpMLineIndex", c.sdpMLineIndex)
-                                    put("candidate", c.sdp ?: "")
-                                }
-                                val payload = JSONObject().apply {
-                                    put("sessionId", roomCode)
-                                    put("from", "client")
-                                    put("role", "client")
-                                    put("candidate", cand)
-                                }
-                                socket?.emit("signal:candidate", payload)
+                                writeIceCandidateEvent(c)
                             }
                             override fun onAddStream(p0: MediaStream?) {}
                             override fun onConnectionChange(newState: PeerConnection.PeerConnectionState?) {
@@ -201,37 +194,8 @@ class ScreenCaptureService : Service() {
                         }
                     })
 
-                    // 🔌 Socket.IO usando a mesma base do servidor
-                    socket = IO.socket(Conn.SERVER_BASE)
-                    socket?.on(Socket.EVENT_CONNECT) {
-                        val joinPayload = JSONObject().apply {
-                            put("sessionId", roomCode)
-                            put("role", "client")
-                        }
-                        socket?.emit("join", joinPayload)
-                    }
-                    socket?.on("peer-joined") {
-                        renegotiate(iceRestart = false)
-                    }
-                    socket?.on("signal:answer") { args ->
-                        if (args.isEmpty()) return@on
-                        val obj = args[0] as? JSONObject ?: return@on
-                        handleSignalAnswer(obj)
-                    }
-                    socket?.on("signal:candidate") { args ->
-                        if (args.isEmpty()) return@on
-                        val obj = args[0] as? JSONObject ?: return@on
-                        handleSignalCandidate(obj)
-                    }
-                    socket?.on("signal") { args ->
-                        if (args.isEmpty()) return@on
-                        val obj = args[0] as? JSONObject ?: return@on
-                        when (obj.optString("type")) {
-                            "answer" -> handleSignalAnswer(obj)
-                            else -> handleSignalCandidate(obj)
-                        }
-                    }
-                    socket?.connect()
+                    listenToSignalEvents()
+                    renegotiate(iceRestart = false)
 
                     started = true
                 } catch (_: SecurityException) {
@@ -295,13 +259,7 @@ class ScreenCaptureService : Service() {
             override fun onCreateSuccess(sdp: SessionDescription) {
                 pc.setLocalDescription(object : SdpObserverAdapter() {
                     override fun onSetSuccess() {
-                        val payload = JSONObject().apply {
-                            put("sessionId", roomCode)
-                            put("from", "client")
-                            put("role", "client")
-                            put("sdp", sdp.description)
-                        }
-                        socket?.emit("signal:offer", payload)
+                        writeOfferEvent(sdp)
                         Log.d(TAG, "Offer enviada (${sdp.description.length} chars)")
                     }
                     override fun onSetFailure(error: String) {
@@ -321,8 +279,7 @@ class ScreenCaptureService : Service() {
         }
     }
 
-    private fun handleSignalAnswer(obj: JSONObject) {
-        val sdp = obj.optString("sdp", "")
+    private fun handleSignalAnswer(sdp: String) {
         if (sdp.isBlank()) return
         peerConnection?.setRemoteDescription(
             object : SdpObserverAdapter() {
@@ -341,8 +298,8 @@ class ScreenCaptureService : Service() {
         )
     }
 
-    private fun handleSignalCandidate(obj: JSONObject) {
-        iceFrom(obj)?.let { cand ->
+    private fun handleSignalCandidate(cand: IceCandidate?) {
+        cand?.let {
             if (remoteDescriptionSet) safeAddIce(cand) else pendingRemoteIce.add(cand)
         }
     }
@@ -358,15 +315,80 @@ class ScreenCaptureService : Service() {
         sender.parameters = params
     }
 
-    private fun iceFrom(obj: JSONObject): IceCandidate? {
+    private fun iceFrom(
+        candidate: String?,
+        sdpMid: String?,
+        sdpMLineIndex: Int?
+    ): IceCandidate? {
         return try {
-            val c = if (obj.has("candidate") && obj.opt("candidate") is JSONObject) {
-                obj.getJSONObject("candidate")
-            } else obj
-            if (!c.has("candidate") || !c.has("sdpMLineIndex")) return null
-            val mid: String = c.optString("sdpMid", "")
-            IceCandidate(mid, c.optInt("sdpMLineIndex", 0), c.optString("candidate", ""))
+            if (candidate.isNullOrBlank() || sdpMLineIndex == null) return null
+            val mid = sdpMid ?: ""
+            IceCandidate(mid, sdpMLineIndex, candidate)
         } catch (_: Throwable) { null }
+    }
+
+    private fun writeOfferEvent(sdp: SessionDescription) {
+        val sid = roomCode
+        if (sid.isBlank()) return
+        val data = mapOf(
+            "type" to "offer",
+            "from" to "client",
+            "sdp" to sdp.description,
+            "createdAt" to FieldValue.serverTimestamp()
+        )
+        db.collection("sessions").document(sid).collection("events").add(data)
+    }
+
+    private fun writeIceCandidateEvent(cand: IceCandidate) {
+        val sid = roomCode
+        if (sid.isBlank()) return
+        val data = mapOf(
+            "type" to "ice",
+            "from" to "client",
+            "candidate" to (cand.sdp ?: ""),
+            "sdpMid" to cand.sdpMid,
+            "sdpMLineIndex" to cand.sdpMLineIndex,
+            "createdAt" to FieldValue.serverTimestamp()
+        )
+        db.collection("sessions").document(sid).collection("events").add(data)
+    }
+
+    private fun listenToSignalEvents() {
+        val sid = roomCode
+        if (sid.isBlank()) return
+        eventsListener?.remove()
+        handledEventIds.clear()
+        eventsListener = db.collection("sessions")
+            .document(sid)
+            .collection("events")
+            .orderBy("createdAt")
+            .addSnapshotListener { snap, err ->
+                if (err != null || snap == null) return@addSnapshotListener
+                for (change in snap.documentChanges) {
+                    if (change.type != DocumentChange.Type.ADDED) continue
+                    val doc = change.document
+                    if (!handledEventIds.add(doc.id)) continue
+                    val type = doc.getString("type") ?: continue
+                    val from = doc.getString("from") ?: ""
+                    if (from == "client") continue
+                    when (type) {
+                        "answer" -> {
+                            val sdp = doc.getString("sdp") ?: ""
+                            handleSignalAnswer(sdp)
+                        }
+                        "ice" -> {
+                            val candidate = doc.getString("candidate")
+                            val sdpMid = doc.getString("sdpMid")
+                            val sdpMLineIndex = (doc.get("sdpMLineIndex") as? Number)?.toInt()
+                            handleSignalCandidate(iceFrom(candidate, sdpMid, sdpMLineIndex))
+                        }
+                        "hangup" -> {
+                            sendStatus("stopped", "remote_hangup")
+                            stopSelfSafe()
+                        }
+                    }
+                }
+            }
     }
 
     // ---------- DataChannel & util ----------
@@ -530,16 +552,8 @@ class ScreenCaptureService : Service() {
         surfaceTextureHelper = null
         try { peerConnection?.close() } catch (_: Exception) {}
         peerConnection = null
-        try {
-            socket?.off(Socket.EVENT_CONNECT)
-            socket?.off("peer-joined")
-            socket?.off("signal:answer")
-            socket?.off("signal:candidate")
-            socket?.off("signal")
-        } catch (_: Exception) {}
-        try { socket?.disconnect() } catch (_: Exception) {}
-        try { socket?.close() } catch (_: Exception) {}
-        socket = null
+        try { eventsListener?.remove() } catch (_: Exception) {}
+        eventsListener = null
         try { eglBase?.release() } catch (_: Exception) {}
         eglBase = null
         started = false
