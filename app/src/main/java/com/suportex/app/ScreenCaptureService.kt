@@ -16,6 +16,7 @@ import androidx.core.app.NotificationCompat
 import com.google.firebase.firestore.DocumentChange
 import com.google.firebase.firestore.FieldValue
 import com.google.firebase.firestore.ListenerRegistration
+import com.suportex.app.remote.RemoteCommandBus
 import com.suportex.app.data.FirebaseDataSource
 import org.json.JSONObject
 import org.webrtc.*
@@ -49,6 +50,7 @@ class ScreenCaptureService : Service() {
     private var peerConnection: PeerConnection? = null
     private var videoSender: RtpSender? = null
     private var dataChannel: DataChannel? = null
+    private var ctrlChannel: DataChannel? = null
     private var certificates: RtcCertificatePem? = null
 
     // Sinalização (Firestore)
@@ -164,7 +166,13 @@ class ScreenCaptureService : Service() {
                             }
                             override fun onIceConnectionChange(p0: PeerConnection.IceConnectionState?) {}
                             override fun onIceGatheringChange(p0: PeerConnection.IceGatheringState?) {}
-                            override fun onDataChannel(p0: DataChannel?) {}
+                            override fun onDataChannel(p0: DataChannel?) {
+                                val channel = p0 ?: return
+                                when (channel.label()) {
+                                    "control" -> registerControlChannel(channel)
+                                    "ctrl" -> registerCtrlChannel(channel)
+                                }
+                            }
                             override fun onIceCandidatesRemoved(p0: Array<out IceCandidate>?) {}
                             override fun onRemoveStream(p0: MediaStream?) {}
                             override fun onRenegotiationNeeded() {}
@@ -180,24 +188,18 @@ class ScreenCaptureService : Service() {
                     applyEncoderQuality(scaleDownBy = 1.0, maxBitrateKbps = 2200, maxFps = 30)
                     applySenderParams(maxKbps = 2200, minKbps = 600, maxFps = 30, scaleDown = null)
 
-                    dataChannel = peerConnection!!.createDataChannel("control", DataChannel.Init())
-                    dataChannel?.registerObserver(object : DataChannel.Observer {
-                        override fun onBufferedAmountChange(previousAmount: Long) {}
-                        override fun onStateChange() {
-                            if (dataChannel?.state() == DataChannel.State.OPEN) {
-                                startPingLoop()
-                                sendStatus("ready")
-                            }
-                        }
-                        override fun onMessage(buffer: DataChannel.Buffer) {
-                            handleDcMessage(buffer)
-                        }
-                    })
+                    registerControlChannel(
+                        peerConnection!!.createDataChannel("control", DataChannel.Init())
+                    )
+
+                    val ctrlInit = DataChannel.Init().apply { ordered = true }
+                    registerCtrlChannel(peerConnection!!.createDataChannel("ctrl", ctrlInit))
 
                     listenToSignalEvents()
                     renegotiate(iceRestart = false)
 
                     started = true
+                    RemoteCommandBus.setSessionActive(true)
                 } catch (_: SecurityException) {
                     stopSelfSafe()
                     return START_NOT_STICKY
@@ -444,6 +446,42 @@ class ScreenCaptureService : Service() {
         }
     }
 
+    private fun registerControlChannel(channel: DataChannel?) {
+        if (channel == null) return
+        dataChannel = channel
+        dataChannel?.registerObserver(object : DataChannel.Observer {
+            override fun onBufferedAmountChange(previousAmount: Long) {}
+            override fun onStateChange() {
+                if (dataChannel?.state() == DataChannel.State.OPEN) {
+                    startPingLoop()
+                    sendStatus("ready")
+                }
+            }
+            override fun onMessage(buffer: DataChannel.Buffer) {
+                handleDcMessage(buffer)
+            }
+        })
+    }
+
+    private fun registerCtrlChannel(channel: DataChannel?) {
+        if (channel == null) return
+        ctrlChannel = channel
+        ctrlChannel?.registerObserver(object : DataChannel.Observer {
+            override fun onBufferedAmountChange(previousAmount: Long) {}
+            override fun onStateChange() {
+                Log.d(TAG, "CTRL channel state=${ctrlChannel?.state()}")
+            }
+            override fun onMessage(buffer: DataChannel.Buffer) {
+                val data = if (buffer.data.hasRemaining()) {
+                    val bytes = ByteArray(buffer.data.remaining())
+                    buffer.data.get(bytes)
+                    String(bytes, Charsets.UTF_8)
+                } else ""
+                RemoteCommandBus.onMessage(data)
+            }
+        })
+    }
+
     private fun sendStatsOnce() {
         val pc = peerConnection ?: return
         pc.getStats { report ->
@@ -544,6 +582,8 @@ class ScreenCaptureService : Service() {
         capturer = null
         try { dataChannel?.close() } catch (_: Exception) {}
         dataChannel = null
+        try { ctrlChannel?.close() } catch (_: Exception) {}
+        ctrlChannel = null
         try { videoTrack?.dispose() } catch (_: Exception) {}
         videoTrack = null
         try { videoSource?.dispose() } catch (_: Exception) {}
@@ -557,6 +597,7 @@ class ScreenCaptureService : Service() {
         try { eglBase?.release() } catch (_: Exception) {}
         eglBase = null
         started = false
+        RemoteCommandBus.setSessionActive(false)
         try { stopForeground(STOP_FOREGROUND_REMOVE) } catch (_: Exception) {}
         stopSelf()
     }

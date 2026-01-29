@@ -8,6 +8,7 @@ import android.media.projection.MediaProjectionManager
 import android.os.Build
 import android.os.Bundle
 import android.os.BatteryManager
+import android.provider.Settings
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -35,6 +36,8 @@ import com.suportex.app.data.SessionRepository
 import com.suportex.app.data.SessionState
 import com.suportex.app.data.SessionTelemetry
 import com.suportex.app.data.SessionTechInfo
+import com.suportex.app.remote.AccessibilityUtils
+import com.suportex.app.remote.RemoteCommandBus
 import com.suportex.app.ui.screens.SessionScreen
 import io.socket.client.IO
 import io.socket.client.Socket
@@ -178,6 +181,7 @@ class MainActivity : ComponentActivity() {
     private fun updateRemoteState(enabled: Boolean, origin: String) {
         val previous = remoteEnabledActive
         remoteEnabledActive = enabled
+        RemoteCommandBus.setRemoteEnabled(enabled)
         runOnUiThread { setRemoteEnabledFromSocket?.invoke(enabled) }
         if (previous != enabled) {
             logSessionEvent(if (enabled) "remote_enable" else "remote_revoke", origin = origin)
@@ -187,6 +191,12 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun requestRemoteStateChange(enabled: Boolean) {
+        if (enabled && !isAccessibilityServiceEnabled()) {
+            openAccessibilitySettings()
+            setSystemMessageFromLauncher?.invoke(
+                "Ative em Acessibilidade → SuporteX → Ativar para permitir o controle remoto."
+            )
+        }
         updateRemoteState(enabled, origin = "client")
         sendCommand(if (enabled) "remote_enable" else "remote_revoke")
     }
@@ -313,7 +323,15 @@ class MainActivity : ComponentActivity() {
             "share_stop" -> {
                 if (isSharingActive) runOnUiThread { stopScreenShare(fromCommand = true) }
             }
-            "remote_enable" -> updateRemoteState(enabled = true, origin = "tech")
+            "remote_enable" -> {
+                if (!remoteEnabledActive) {
+                    runOnUiThread {
+                        setSystemMessageFromLauncher?.invoke(
+                            "O técnico solicitou acesso remoto. Ative \"Permitir Acesso Remoto\" para continuar."
+                        )
+                    }
+                }
+            }
             "remote_disable", "remote_revoke" -> updateRemoteState(enabled = false, origin = "tech")
             "call_start" -> {
                 val payload = obj.optJSONObject("payload")
@@ -329,6 +347,7 @@ class MainActivity : ComponentActivity() {
     private fun resetSessionState() {
         isSharingActive = false
         remoteEnabledActive = false
+        RemoteCommandBus.setRemoteEnabled(false)
         callingActive = false
         callConnectedActive = false
         runOnUiThread {
@@ -534,6 +553,17 @@ class MainActivity : ComponentActivity() {
         ContextCompat.startForegroundService(this, stop)
         val origin = originOverride ?: if (fromCommand) "tech" else "client"
         updateSharingState(active = false, origin = origin)
+    }
+
+    private fun isAccessibilityServiceEnabled(): Boolean {
+        return AccessibilityUtils.isServiceEnabled(this, com.suportex.app.remote.RemoteControlService::class.java)
+    }
+
+    private fun openAccessibilitySettings() {
+        val intent = Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS).apply {
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        }
+        startActivity(intent)
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {

@@ -35,6 +35,19 @@
             android:exported="false"
             android:foregroundServiceType="mediaProjection" />
 
+        <service
+            android:name="com.suportex.app.remote.RemoteControlService"
+            android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="android.accessibilityservice.AccessibilityService" />
+            </intent-filter>
+
+            <meta-data
+                android:name="android.accessibilityservice"
+                android:resource="@xml/remote_accessibility_config" />
+        </service>
+
         <activity
             android:name="com.suportex.app.MainActivity"
             android:exported="true">
