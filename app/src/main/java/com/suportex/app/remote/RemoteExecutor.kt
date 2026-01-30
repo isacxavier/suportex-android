@@ -3,12 +3,17 @@ package com.suportex.app.remote
 import android.accessibilityservice.AccessibilityService
 import android.accessibilityservice.GestureDescription
 import android.graphics.Path
+import android.graphics.Rect
+import android.os.Build
 import android.os.Bundle
 import android.util.Log
+import android.view.WindowInsets
+import android.view.WindowManager
 import android.view.accessibility.AccessibilityNodeInfo
 
 object RemoteExecutor {
     private const val TAG = "SXS/CTRL"
+    private const val TAP_DURATION_MS = 100L
     private var svc: RemoteControlService? = null
 
     fun bind(service: RemoteControlService) {
@@ -26,11 +31,11 @@ object RemoteExecutor {
     fun tap(xNorm: Float, yNorm: Float) {
         val (x, y) = normalizeToPx(xNorm, yNorm) ?: return
         val path = Path().apply { moveTo(x, y) }
-        val stroke = GestureDescription.StrokeDescription(path, 0, 1)
+        val stroke = GestureDescription.StrokeDescription(path, 0, TAP_DURATION_MS)
         dispatchGesture(stroke)
     }
 
-    fun longPress(xNorm: Float, yNorm: Float, durationMs: Long = 500L) {
+    fun longPress(xNorm: Float, yNorm: Float, durationMs: Long = 550L) {
         val (x, y) = normalizeToPx(xNorm, yNorm) ?: return
         val path = Path().apply { moveTo(x, y) }
         val stroke = GestureDescription.StrokeDescription(path, 0, durationMs.coerceAtLeast(1))
@@ -82,10 +87,33 @@ object RemoteExecutor {
 
     private fun normalizeToPx(xNorm: Float, yNorm: Float): Pair<Float, Float>? {
         val service = svc ?: return null
-        val dm = service.resources.displayMetrics
-        val x = xNorm.coerceIn(0f, 1f) * dm.widthPixels
-        val y = yNorm.coerceIn(0f, 1f) * dm.heightPixels
+        val area = resolveTappableArea(service)
+        val width = (area.right - area.left).toFloat().coerceAtLeast(1f)
+        val height = (area.bottom - area.top).toFloat().coerceAtLeast(1f)
+        val x = area.left + xNorm.coerceIn(0f, 1f) * width
+        val y = area.top + yNorm.coerceIn(0f, 1f) * height
         return x to y
+    }
+
+    private fun resolveTappableArea(service: AccessibilityService): Rect {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            val windowManager = service.getSystemService(WindowManager::class.java)
+            if (windowManager != null) {
+                val metrics = windowManager.currentWindowMetrics
+                val insets = metrics.windowInsets.getInsetsIgnoringVisibility(
+                    WindowInsets.Type.systemBars() or WindowInsets.Type.displayCutout()
+                )
+                val bounds = metrics.bounds
+                return Rect(
+                    bounds.left + insets.left,
+                    bounds.top + insets.top,
+                    bounds.right - insets.right,
+                    bounds.bottom - insets.bottom
+                )
+            }
+        }
+        val dm = service.resources.displayMetrics
+        return Rect(0, 0, dm.widthPixels, dm.heightPixels)
     }
 
     private fun dispatchGesture(stroke: GestureDescription.StrokeDescription) {
