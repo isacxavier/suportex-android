@@ -13,9 +13,16 @@ import android.view.accessibility.AccessibilityNodeInfo
 object RemoteExecutor {
     private const val TAG = "SXS/CTRL"
     private const val TAP_DURATION_MS = 100L
+    private const val DEFAULT_LONG_PRESS_MS = 2000L
+    private const val DEFAULT_DRAG_SEGMENT_MS = 120L
+    private const val POINTER_HOLD_MS = 10000L
     private var svc: RemoteControlService? = null
     @Volatile private var captureFrameWidth = 0
     @Volatile private var captureFrameHeight = 0
+    @Volatile private var ongoingDrag: GestureDescription.StrokeDescription? = null
+    @Volatile private var lastDragPoint: Pair<Float, Float>? = null
+    @Volatile private var ongoingPointer: GestureDescription.StrokeDescription? = null
+    @Volatile private var lastPointerPoint: Pair<Float, Float>? = null
 
     fun bind(service: RemoteControlService) {
         svc = service
@@ -25,6 +32,10 @@ object RemoteExecutor {
         if (svc === service) {
             svc = null
             clearCaptureFrameSize()
+            ongoingDrag = null
+            lastDragPoint = null
+            ongoingPointer = null
+            lastPointerPoint = null
         }
     }
 
@@ -37,7 +48,7 @@ object RemoteExecutor {
         dispatchGesture(stroke)
     }
 
-    fun longPress(xNorm: Float, yNorm: Float, durationMs: Long = 900L) {
+    fun longPress(xNorm: Float, yNorm: Float, durationMs: Long = DEFAULT_LONG_PRESS_MS) {
         val (x, y) = normalizeToPx(xNorm, yNorm) ?: return
         val path = Path().apply { moveTo(x, y) }
         val stroke = GestureDescription.StrokeDescription(path, 0, durationMs.coerceAtLeast(1))
@@ -52,6 +63,116 @@ object RemoteExecutor {
         durationMs: Long = 450L
     ) {
         swipe(xStartNorm, yStartNorm, xEndNorm, yEndNorm, durationMs)
+    }
+
+    fun dragStart(xNorm: Float, yNorm: Float) {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) {
+            return
+        }
+        val (x, y) = normalizeToPx(xNorm, yNorm) ?: return
+        val path = Path().apply { moveTo(x, y) }
+        val stroke = GestureDescription.StrokeDescription(
+            path,
+            0,
+            DEFAULT_DRAG_SEGMENT_MS,
+            true
+        )
+        dispatchGesture(stroke)
+        ongoingDrag = stroke
+        lastDragPoint = x to y
+    }
+
+    fun pointerDown(xNorm: Float, yNorm: Float) {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) {
+            return
+        }
+        val (x, y) = normalizeToPx(xNorm, yNorm) ?: return
+        val path = Path().apply { moveTo(x, y) }
+        val stroke = GestureDescription.StrokeDescription(
+            path,
+            0,
+            POINTER_HOLD_MS,
+            true
+        )
+        dispatchGesture(stroke)
+        ongoingPointer = stroke
+        lastPointerPoint = x to y
+    }
+
+    fun pointerMove(xNorm: Float, yNorm: Float, durationMs: Long = DEFAULT_DRAG_SEGMENT_MS) {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) {
+            return
+        }
+        val previous = ongoingPointer ?: return
+        val lastPoint = lastPointerPoint ?: return
+        val (x, y) = normalizeToPx(xNorm, yNorm) ?: return
+        val path = Path().apply {
+            moveTo(lastPoint.first, lastPoint.second)
+            lineTo(x, y)
+        }
+        val stroke = previous.continueStroke(path, 0, durationMs.coerceAtLeast(1), true)
+        dispatchGesture(stroke)
+        ongoingPointer = stroke
+        lastPointerPoint = x to y
+    }
+
+    fun pointerUp(xNorm: Float, yNorm: Float, durationMs: Long = DEFAULT_DRAG_SEGMENT_MS) {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) {
+            return
+        }
+        val previous = ongoingPointer
+        val lastPoint = lastPointerPoint
+        val (x, y) = normalizeToPx(xNorm, yNorm) ?: return
+        if (previous == null || lastPoint == null) {
+            swipe(xNorm, yNorm, xNorm, yNorm, durationMs)
+            return
+        }
+        val path = Path().apply {
+            moveTo(lastPoint.first, lastPoint.second)
+            lineTo(x, y)
+        }
+        val stroke = previous.continueStroke(path, 0, durationMs.coerceAtLeast(1), false)
+        dispatchGesture(stroke)
+        ongoingPointer = null
+        lastPointerPoint = null
+    }
+
+    fun dragMove(xNorm: Float, yNorm: Float, durationMs: Long = DEFAULT_DRAG_SEGMENT_MS) {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) {
+            return
+        }
+        val previous = ongoingDrag ?: return
+        val lastPoint = lastDragPoint ?: return
+        val (x, y) = normalizeToPx(xNorm, yNorm) ?: return
+        val path = Path().apply {
+            moveTo(lastPoint.first, lastPoint.second)
+            lineTo(x, y)
+        }
+        val stroke = previous.continueStroke(path, 0, durationMs.coerceAtLeast(1), true)
+        dispatchGesture(stroke)
+        ongoingDrag = stroke
+        lastDragPoint = x to y
+    }
+
+    fun dragEnd(xNorm: Float, yNorm: Float, durationMs: Long = DEFAULT_DRAG_SEGMENT_MS) {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) {
+            return
+        }
+        val previous = ongoingDrag
+        val lastPoint = lastDragPoint
+        val (x, y) = normalizeToPx(xNorm, yNorm) ?: return
+        if (previous == null || lastPoint == null) {
+            swipe(xNorm, yNorm, xNorm, yNorm, durationMs)
+            return
+        }
+        val path = Path().apply {
+            moveTo(lastPoint.first, lastPoint.second)
+            lineTo(x, y)
+        }
+        val stroke = previous.continueStroke(path, 0, durationMs.coerceAtLeast(1), false)
+        dispatchGesture(stroke)
+        ongoingDrag = null
+        lastDragPoint = null
     }
 
     fun swipe(
