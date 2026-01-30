@@ -33,7 +33,7 @@ object RemoteCommandBus {
             "longpress" -> {
                 val x = obj.optDouble("x", Double.NaN)
                 val y = obj.optDouble("y", Double.NaN)
-                val duration = obj.optLong("durationMs", 500L)
+                val duration = obj.optLong("durationMs", 2000L)
                 if (!x.isNaN() && !y.isNaN()) {
                     RemoteExecutor.longPress(x.toFloat(), y.toFloat(), duration)
                 }
@@ -60,14 +60,61 @@ object RemoteCommandBus {
                 val x2 = obj.optDouble("x2", Double.NaN)
                 val y2 = obj.optDouble("y2", Double.NaN)
                 val duration = obj.optLong("durationMs", 450L)
-                if (!x1.isNaN() && !y1.isNaN() && !x2.isNaN() && !y2.isNaN()) {
-                    RemoteExecutor.drag(
-                        x1.toFloat(),
-                        y1.toFloat(),
-                        x2.toFloat(),
-                        y2.toFloat(),
-                        duration
-                    )
+                val phase = obj.optString("phase", "")
+                when (phase) {
+                    "start" -> {
+                        if (!x1.isNaN() && !y1.isNaN()) {
+                            RemoteExecutor.dragStart(x1.toFloat(), y1.toFloat())
+                        }
+                    }
+                    "move" -> {
+                        val x = if (!x2.isNaN()) x2 else x1
+                        val y = if (!y2.isNaN()) y2 else y1
+                        if (!x.isNaN() && !y.isNaN()) {
+                            RemoteExecutor.dragMove(x.toFloat(), y.toFloat(), duration)
+                        }
+                    }
+                    "end" -> {
+                        val x = if (!x2.isNaN()) x2 else x1
+                        val y = if (!y2.isNaN()) y2 else y1
+                        if (!x.isNaN() && !y.isNaN()) {
+                            RemoteExecutor.dragEnd(x.toFloat(), y.toFloat(), duration)
+                        }
+                    }
+                    else -> {
+                        if (!x1.isNaN() && !y1.isNaN() && !x2.isNaN() && !y2.isNaN()) {
+                            RemoteExecutor.drag(
+                                x1.toFloat(),
+                                y1.toFloat(),
+                                x2.toFloat(),
+                                y2.toFloat(),
+                                duration
+                            )
+                        }
+                    }
+                }
+            }
+            "pointer_down" -> {
+                val x = obj.optDouble("x", Double.NaN)
+                val y = obj.optDouble("y", Double.NaN)
+                if (!x.isNaN() && !y.isNaN()) {
+                    RemoteExecutor.pointerDown(x.toFloat(), y.toFloat())
+                }
+            }
+            "pointer_move" -> {
+                val x = obj.optDouble("x", Double.NaN)
+                val y = obj.optDouble("y", Double.NaN)
+                val duration = obj.optLong("durationMs", 120L)
+                if (!x.isNaN() && !y.isNaN()) {
+                    RemoteExecutor.pointerMove(x.toFloat(), y.toFloat(), duration)
+                }
+            }
+            "pointer_up" -> {
+                val x = obj.optDouble("x", Double.NaN)
+                val y = obj.optDouble("y", Double.NaN)
+                val duration = obj.optLong("durationMs", 120L)
+                if (!x.isNaN() && !y.isNaN()) {
+                    RemoteExecutor.pointerUp(x.toFloat(), y.toFloat(), duration)
                 }
             }
             "back" -> RemoteExecutor.back()
@@ -77,6 +124,10 @@ object RemoteCommandBus {
                 val text = obj.optString("text", obj.optString("value", ""))
                 val append = obj.optBoolean("append", true)
                 RemoteExecutor.inputText(text, append)
+            }
+            "set_text" -> {
+                val text = obj.optString("text", obj.optString("value", ""))
+                RemoteExecutor.inputText(text, append = false)
             }
         }
     }
