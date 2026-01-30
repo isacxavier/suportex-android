@@ -354,7 +354,7 @@ object RemoteExecutor {
     ): Pair<String, Int> {
         val (start, end) = selection
         val newText = StringBuilder(currentText.length + insertText.length).apply {
-            append(currentText.substring(0, start))
+            append(currentText.take(start))
             append(insertText)
             append(currentText.substring(end))
         }.toString()
