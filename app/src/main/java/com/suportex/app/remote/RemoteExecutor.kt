@@ -7,7 +7,6 @@ import android.graphics.Rect
 import android.os.Build
 import android.os.Bundle
 import android.util.Log
-import android.view.WindowInsets
 import android.view.WindowManager
 import android.view.accessibility.AccessibilityNodeInfo
 
@@ -15,6 +14,8 @@ object RemoteExecutor {
     private const val TAG = "SXS/CTRL"
     private const val TAP_DURATION_MS = 100L
     private var svc: RemoteControlService? = null
+    @Volatile private var captureFrameWidth = 0
+    @Volatile private var captureFrameHeight = 0
 
     fun bind(service: RemoteControlService) {
         svc = service
@@ -23,6 +24,7 @@ object RemoteExecutor {
     fun unbind(service: RemoteControlService) {
         if (svc === service) {
             svc = null
+            clearCaptureFrameSize()
         }
     }
 
@@ -85,6 +87,18 @@ object RemoteExecutor {
         }
     }
 
+    fun setCaptureFrameSize(width: Int, height: Int) {
+        if (width > 0 && height > 0) {
+            captureFrameWidth = width
+            captureFrameHeight = height
+        }
+    }
+
+    fun clearCaptureFrameSize() {
+        captureFrameWidth = 0
+        captureFrameHeight = 0
+    }
+
     private fun normalizeToPx(xNorm: Float, yNorm: Float): Pair<Float, Float>? {
         val service = svc ?: return null
         val area = resolveTappableArea(service)
@@ -96,20 +110,15 @@ object RemoteExecutor {
     }
 
     private fun resolveTappableArea(service: AccessibilityService): Rect {
+        if (captureFrameWidth > 0 && captureFrameHeight > 0) {
+            return Rect(0, 0, captureFrameWidth, captureFrameHeight)
+        }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
             val windowManager = service.getSystemService(WindowManager::class.java)
             if (windowManager != null) {
                 val metrics = windowManager.currentWindowMetrics
-                val insets = metrics.windowInsets.getInsetsIgnoringVisibility(
-                    WindowInsets.Type.systemBars() or WindowInsets.Type.displayCutout()
-                )
                 val bounds = metrics.bounds
-                return Rect(
-                    bounds.left + insets.left,
-                    bounds.top + insets.top,
-                    bounds.right - insets.right,
-                    bounds.bottom - insets.bottom
-                )
+                return Rect(bounds.left, bounds.top, bounds.right, bounds.bottom)
             }
         }
         val dm = service.resources.displayMetrics

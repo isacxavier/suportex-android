@@ -12,11 +12,13 @@ import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
 import android.util.Log
+import android.view.WindowManager
 import androidx.core.app.NotificationCompat
 import com.google.firebase.firestore.DocumentChange
 import com.google.firebase.firestore.FieldValue
 import com.google.firebase.firestore.ListenerRegistration
 import com.suportex.app.remote.RemoteCommandBus
+import com.suportex.app.remote.RemoteExecutor
 import com.suportex.app.data.FirebaseDataSource
 import org.json.JSONObject
 import org.webrtc.*
@@ -131,7 +133,9 @@ class ScreenCaptureService : Service() {
                         applicationContext,
                         videoSource!!.capturerObserver
                     )
-                    capturer!!.startCapture(720, 1280, 30)
+                    val (captureWidth, captureHeight) = resolveCaptureSize()
+                    capturer!!.startCapture(captureWidth, captureHeight, 30)
+                    RemoteExecutor.setCaptureFrameSize(captureWidth, captureHeight)
 
                     val iceServers = listOf(
                         PeerConnection.IceServer.builder("stun:stun.l.google.com:19302").createIceServer()
@@ -598,6 +602,7 @@ class ScreenCaptureService : Service() {
         eglBase = null
         started = false
         RemoteCommandBus.setSessionActive(false)
+        RemoteExecutor.clearCaptureFrameSize()
         try { stopForeground(STOP_FOREGROUND_REMOVE) } catch (_: Exception) {}
         stopSelf()
     }
@@ -608,6 +613,20 @@ class ScreenCaptureService : Service() {
     }
 
     override fun onBind(intent: Intent?): IBinder? = null
+
+    private fun resolveCaptureSize(): Pair<Int, Int> {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            val windowManager = getSystemService(WindowManager::class.java)
+            if (windowManager != null) {
+                val bounds = windowManager.currentWindowMetrics.bounds
+                val width = (bounds.right - bounds.left).coerceAtLeast(1)
+                val height = (bounds.bottom - bounds.top).coerceAtLeast(1)
+                return width to height
+            }
+        }
+        val dm = resources.displayMetrics
+        return dm.widthPixels.coerceAtLeast(1) to dm.heightPixels.coerceAtLeast(1)
+    }
 }
 
 open class SdpObserverAdapter : SdpObserver {
