@@ -381,8 +381,8 @@ object RemoteExecutor {
 
     private fun setSelection(node: AccessibilityNodeInfo, selectionStart: Int, selectionEnd: Int) {
         val selectionArgs = Bundle().apply {
-            putInt(AccessibilityNodeInfo.ACTION_ARGUMENT_SELECTION_START, selectionStart)
-            putInt(AccessibilityNodeInfo.ACTION_ARGUMENT_SELECTION_END, selectionEnd)
+            putInt(AccessibilityNodeInfo.ACTION_ARGUMENT_SELECTION_START_INT, selectionStart)
+            putInt(AccessibilityNodeInfo.ACTION_ARGUMENT_SELECTION_END_INT, selectionEnd)
         }
         node.performAction(AccessibilityNodeInfo.ACTION_SET_SELECTION, selectionArgs)
     }
