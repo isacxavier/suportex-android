@@ -37,11 +37,21 @@ object RemoteExecutor {
         dispatchGesture(stroke)
     }
 
-    fun longPress(xNorm: Float, yNorm: Float, durationMs: Long = 550L) {
+    fun longPress(xNorm: Float, yNorm: Float, durationMs: Long = 900L) {
         val (x, y) = normalizeToPx(xNorm, yNorm) ?: return
         val path = Path().apply { moveTo(x, y) }
         val stroke = GestureDescription.StrokeDescription(path, 0, durationMs.coerceAtLeast(1))
         dispatchGesture(stroke)
+    }
+
+    fun drag(
+        xStartNorm: Float,
+        yStartNorm: Float,
+        xEndNorm: Float,
+        yEndNorm: Float,
+        durationMs: Long = 450L
+    ) {
+        swipe(xStartNorm, yStartNorm, xEndNorm, yEndNorm, durationMs)
     }
 
     fun swipe(
@@ -73,18 +83,42 @@ object RemoteExecutor {
         svc?.performGlobalAction(AccessibilityService.GLOBAL_ACTION_RECENTS)
     }
 
-    fun inputText(text: String) {
+    fun inputText(text: String, append: Boolean = true) {
         val service = svc ?: return
         if (text.isBlank()) return
         val root = service.rootInActiveWindow ?: return
-        val focused = root.findFocus(AccessibilityNodeInfo.FOCUS_INPUT) ?: root
+        var focused = root.findFocus(AccessibilityNodeInfo.FOCUS_INPUT)
+        if (focused == null) {
+            focused = findFirstEditable(root)
+        }
+        if (focused == null) {
+            Log.w(TAG, "Nenhum campo editável encontrado para inserir texto")
+            return
+        }
+        focused.performAction(AccessibilityNodeInfo.ACTION_FOCUS)
+        val current = focused.text?.toString() ?: ""
+        val finalText = if (append) {
+            current + text
+        } else {
+            text
+        }
         val args = Bundle().apply {
-            putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, text)
+            putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, finalText)
         }
         val ok = focused.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, args)
         if (!ok) {
             Log.w(TAG, "Falha ao inserir texto")
         }
+    }
+
+    private fun findFirstEditable(root: AccessibilityNodeInfo?): AccessibilityNodeInfo? {
+        if (root == null) return null
+        if (root.isEditable) return root
+        for (i in 0 until root.childCount) {
+            val found = findFirstEditable(root.getChild(i))
+            if (found != null) return found
+        }
+        return null
     }
 
     fun setCaptureFrameSize(width: Int, height: Int) {

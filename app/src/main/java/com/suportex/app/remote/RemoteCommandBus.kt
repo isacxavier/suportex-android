@@ -54,12 +54,29 @@ object RemoteCommandBus {
                     )
                 }
             }
+            "drag" -> {
+                val x1 = obj.optDouble("x1", Double.NaN)
+                val y1 = obj.optDouble("y1", Double.NaN)
+                val x2 = obj.optDouble("x2", Double.NaN)
+                val y2 = obj.optDouble("y2", Double.NaN)
+                val duration = obj.optLong("durationMs", 450L)
+                if (!x1.isNaN() && !y1.isNaN() && !x2.isNaN() && !y2.isNaN()) {
+                    RemoteExecutor.drag(
+                        x1.toFloat(),
+                        y1.toFloat(),
+                        x2.toFloat(),
+                        y2.toFloat(),
+                        duration
+                    )
+                }
+            }
             "back" -> RemoteExecutor.back()
             "home" -> RemoteExecutor.home()
             "recents" -> RemoteExecutor.recents()
             "text" -> {
                 val text = obj.optString("text", obj.optString("value", ""))
-                RemoteExecutor.inputText(text)
+                val append = obj.optBoolean("append", true)
+                RemoteExecutor.inputText(text, append)
             }
         }
     }
