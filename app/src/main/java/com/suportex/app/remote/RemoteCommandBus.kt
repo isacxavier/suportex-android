@@ -129,6 +129,16 @@ object RemoteCommandBus {
                 val text = obj.optString("text", obj.optString("value", ""))
                 RemoteExecutor.inputText(text, append = false)
             }
+            "key" -> {
+                val key = obj.optString("key", obj.optString("value", obj.optString("k", "")))
+                val shift = obj.optBoolean("shift", false)
+                if (key.isNotBlank()) {
+                    RemoteExecutor.applyKey(key, shift)
+                }
+            }
+            "send" -> {
+                RemoteExecutor.trySendAction()
+            }
         }
     }
 

@@ -206,12 +206,9 @@ object RemoteExecutor {
 
     fun inputText(text: String, append: Boolean = true) {
         val service = svc ?: return
-        if (text.isBlank()) return
+        if (append && text.isBlank()) return
         val root = service.rootInActiveWindow ?: return
-        var focused = root.findFocus(AccessibilityNodeInfo.FOCUS_INPUT)
-        if (focused == null) {
-            focused = findFirstEditable(root)
-        }
+        val focused = findFocusedEditable(root)
         if (focused == null) {
             Log.w(TAG, "Nenhum campo editável encontrado para inserir texto")
             return
@@ -232,11 +229,179 @@ object RemoteExecutor {
         }
     }
 
+    fun applyKey(key: String, shift: Boolean = false) {
+        val service = svc ?: return
+        val root = service.rootInActiveWindow ?: return
+        val focused = findFocusedEditable(root)
+        if (focused == null) {
+            Log.w(TAG, "Nenhum campo editável encontrado para tecla $key")
+            return
+        }
+        focused.performAction(AccessibilityNodeInfo.ACTION_FOCUS)
+        val currentText = focused.text?.toString() ?: ""
+        val selection = normalizeSelection(focused, currentText.length)
+        val normalizedKey = key.trim().lowercase()
+
+        when (normalizedKey) {
+            "arrowleft", "left" -> {
+                val newPos = if (selection.first != selection.second) {
+                    selection.first
+                } else {
+                    (selection.first - 1).coerceAtLeast(0)
+                }
+                setSelection(focused, newPos, newPos)
+            }
+            "arrowright", "right" -> {
+                val newPos = if (selection.first != selection.second) {
+                    selection.second
+                } else {
+                    (selection.second + 1).coerceAtMost(currentText.length)
+                }
+                setSelection(focused, newPos, newPos)
+            }
+            "arrowup", "up" -> {
+                setSelection(focused, 0, 0)
+            }
+            "arrowdown", "down" -> {
+                setSelection(focused, currentText.length, currentText.length)
+            }
+            "backspace" -> {
+                val (newText, cursor) = applyDeletion(currentText, selection, deleteForward = false)
+                setTextAndSelection(focused, newText, cursor, cursor)
+            }
+            "delete" -> {
+                val (newText, cursor) = applyDeletion(currentText, selection, deleteForward = true)
+                setTextAndSelection(focused, newText, cursor, cursor)
+            }
+            "enter", "return" -> {
+                if (!shift && trySendAction()) {
+                    return
+                }
+                val (newText, cursor) = applyInsertion(currentText, selection, "\n")
+                setTextAndSelection(focused, newText, cursor, cursor)
+            }
+            "tab" -> {
+                val (newText, cursor) = applyInsertion(currentText, selection, "\t")
+                setTextAndSelection(focused, newText, cursor, cursor)
+            }
+        }
+    }
+
+    fun trySendAction(): Boolean {
+        val service = svc ?: return false
+        val root = service.rootInActiveWindow ?: return false
+        val sendButton = findSendButton(root) ?: return false
+        val ok = sendButton.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+        if (!ok) {
+            Log.w(TAG, "Falha ao acionar botão de envio")
+        }
+        return ok
+    }
+
     private fun findFirstEditable(root: AccessibilityNodeInfo?): AccessibilityNodeInfo? {
         if (root == null) return null
         if (root.isEditable) return root
         for (i in 0 until root.childCount) {
             val found = findFirstEditable(root.getChild(i))
+            if (found != null) return found
+        }
+        return null
+    }
+
+    private fun findFocusedEditable(root: AccessibilityNodeInfo): AccessibilityNodeInfo? {
+        val focused = root.findFocus(AccessibilityNodeInfo.FOCUS_INPUT)
+        return focused ?: findFirstEditable(root)
+    }
+
+    private fun normalizeSelection(node: AccessibilityNodeInfo, textLength: Int): Pair<Int, Int> {
+        val start = node.textSelectionStart.takeIf { it >= 0 } ?: textLength
+        val end = node.textSelectionEnd.takeIf { it >= 0 } ?: textLength
+        return if (start <= end) {
+            start to end
+        } else {
+            end to start
+        }
+    }
+
+    private fun applyDeletion(
+        currentText: String,
+        selection: Pair<Int, Int>,
+        deleteForward: Boolean
+    ): Pair<String, Int> {
+        val (start, end) = selection
+        if (start != end) {
+            val newText = currentText.removeRange(start, end)
+            return newText to start
+        }
+        if (deleteForward) {
+            if (start >= currentText.length) {
+                return currentText to start
+            }
+            val newText = currentText.removeRange(start, start + 1)
+            return newText to start
+        }
+        if (start <= 0) {
+            return currentText to start
+        }
+        val newText = currentText.removeRange(start - 1, start)
+        return newText to (start - 1)
+    }
+
+    private fun applyInsertion(
+        currentText: String,
+        selection: Pair<Int, Int>,
+        insertText: String
+    ): Pair<String, Int> {
+        val (start, end) = selection
+        val newText = StringBuilder(currentText.length + insertText.length).apply {
+            append(currentText.substring(0, start))
+            append(insertText)
+            append(currentText.substring(end))
+        }.toString()
+        val cursor = start + insertText.length
+        return newText to cursor
+    }
+
+    private fun setTextAndSelection(
+        node: AccessibilityNodeInfo,
+        text: String,
+        selectionStart: Int,
+        selectionEnd: Int
+    ) {
+        val args = Bundle().apply {
+            putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, text)
+        }
+        val ok = node.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, args)
+        if (!ok) {
+            Log.w(TAG, "Falha ao inserir texto")
+            return
+        }
+        setSelection(node, selectionStart.coerceAtLeast(0), selectionEnd.coerceAtLeast(0))
+    }
+
+    private fun setSelection(node: AccessibilityNodeInfo, selectionStart: Int, selectionEnd: Int) {
+        val selectionArgs = Bundle().apply {
+            putInt(AccessibilityNodeInfo.ACTION_ARGUMENT_SELECTION_START, selectionStart)
+            putInt(AccessibilityNodeInfo.ACTION_ARGUMENT_SELECTION_END, selectionEnd)
+        }
+        node.performAction(AccessibilityNodeInfo.ACTION_SET_SELECTION, selectionArgs)
+    }
+
+    private fun findSendButton(root: AccessibilityNodeInfo?): AccessibilityNodeInfo? {
+        if (root == null) return null
+        val className = root.className?.toString().orEmpty()
+        val label = listOfNotNull(
+            root.text?.toString(),
+            root.contentDescription?.toString(),
+            root.viewIdResourceName
+        ).joinToString(" ").lowercase()
+        val isButton = className.contains("Button", ignoreCase = true)
+        val looksLikeSend = label.contains("send") || label.contains("enviar")
+        if (isButton && looksLikeSend) {
+            return root
+        }
+        for (i in 0 until root.childCount) {
+            val found = findSendButton(root.getChild(i))
             if (found != null) return found
         }
         return null
