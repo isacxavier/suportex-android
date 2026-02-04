@@ -265,19 +265,23 @@ object RemoteExecutor {
             "arrowdown", "down" -> {
                 setSelection(focused, currentText.length, currentText.length)
             }
-            "backspace" -> {
+            "backspace", "del", "deletebackward" -> {
                 val (newText, cursor) = applyDeletion(currentText, selection, deleteForward = false)
                 setTextAndSelection(focused, newText, cursor, cursor)
             }
-            "delete" -> {
+            "delete", "forwarddelete" -> {
                 val (newText, cursor) = applyDeletion(currentText, selection, deleteForward = true)
                 setTextAndSelection(focused, newText, cursor, cursor)
             }
-            "enter", "return" -> {
+            "enter", "return", "numenter" -> {
                 if (!shift && trySendAction()) {
                     return
                 }
                 val (newText, cursor) = applyInsertion(currentText, selection, "\n")
+                setTextAndSelection(focused, newText, cursor, cursor)
+            }
+            "space", "spacebar", " " -> {
+                val (newText, cursor) = applyInsertion(currentText, selection, " ")
                 setTextAndSelection(focused, newText, cursor, cursor)
             }
             "tab" -> {
