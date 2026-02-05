@@ -18,6 +18,7 @@ import androidx.core.app.NotificationCompat
 import com.google.firebase.firestore.DocumentChange
 import com.google.firebase.firestore.FieldValue
 import com.google.firebase.firestore.ListenerRegistration
+import com.suportex.app.BuildConfig
 import com.suportex.app.remote.RemoteCommandBus
 import com.suportex.app.remote.RemoteExecutor
 import com.suportex.app.data.FirebaseDataSource
@@ -322,7 +323,7 @@ class ScreenCaptureService : Service() {
         val enc = params.encodings[0]
         enc.scaleResolutionDownBy = scaleDownBy
         enc.maxFramerate = maxFps
-        sender.setParameters(params)
+        sender.parameters = params
     }
 
     private fun preferH264Codec() {
