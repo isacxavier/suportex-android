@@ -5,6 +5,7 @@ import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.app.Service
+import android.app.ActivityManager
 import android.content.Intent
 import android.media.projection.MediaProjection
 import android.os.Build
@@ -65,6 +66,7 @@ class ScreenCaptureService : Service() {
     private val mainHandler = Handler(Looper.getMainLooper())
     private val lastPongAt = AtomicLong(0L)
     private var pingRunnable: Runnable? = null
+    private var statsRunnable: Runnable? = null
 
     override fun onCreate() {
         super.onCreate()
@@ -189,8 +191,10 @@ class ScreenCaptureService : Service() {
                     videoTrack = factory!!.createVideoTrack("video", videoSource!!)
                     videoSender = peerConnection!!.addTrack(videoTrack!!, listOf("screen"))
 
-                    applyEncoderQuality(scaleDownBy = 1.0, maxBitrateKbps = 2200, maxFps = 30)
-                    applySenderParams(maxKbps = 2200, minKbps = 600, maxFps = 30, scaleDown = null)
+                    preferH264Codec()
+                    applyEncoderQuality(scaleDownBy = 1.0, maxFps = 30)
+                    applySenderParams(maxKbps = 2500, minKbps = 600, maxFps = 30, scaleDown = null)
+                    startDebugStatsLoop()
 
                     registerControlChannel(
                         peerConnection!!.createDataChannel("control", DataChannel.Init())
@@ -236,6 +240,7 @@ class ScreenCaptureService : Service() {
                 Log.w(TAG, "applySenderParams: encodings vazio; nada a aplicar")
                 return
             }
+            params.degradationPreference = RtpParameters.DegradationPreference.MAINTAIN_FRAMERATE
             val e = params.encodings[0]
             e.maxBitrateBps = maxKbps * 1000
             if (minKbps != null) e.minBitrateBps = minKbps * 1000
@@ -310,15 +315,33 @@ class ScreenCaptureService : Service() {
         }
     }
 
-    private fun applyEncoderQuality(scaleDownBy: Double?, maxBitrateKbps: Int?, maxFps: Int?) {
+    private fun applyEncoderQuality(scaleDownBy: Double?, maxFps: Int?) {
         val sender = videoSender ?: return
         val params = sender.parameters
         if (params.encodings.isEmpty()) return
         val enc = params.encodings[0]
         enc.scaleResolutionDownBy = scaleDownBy
-        enc.maxBitrateBps = maxBitrateKbps?.let { it * 1000 }
         enc.maxFramerate = maxFps
-        sender.parameters = params
+        sender.setParameters(params)
+    }
+
+    private fun preferH264Codec() {
+        val pc = peerConnection ?: return
+        val sender = videoSender ?: return
+        try {
+            val transceiver = pc.transceivers.firstOrNull { it.sender == sender } ?: return
+            val caps = RtpReceiver.getCapabilities(MediaStreamTrack.MediaType.MEDIA_TYPE_VIDEO) ?: return
+            val h264 = caps.codecs.filter { it.name.equals("H264", true) }
+            if (h264.isEmpty()) return
+            val ordered = ArrayList<RtpCodecCapability>(caps.codecs.size).apply {
+                addAll(h264)
+                addAll(caps.codecs.filterNot { it.name.equals("H264", true) })
+            }
+            val applied = transceiver.setCodecPreferences(ordered)
+            Log.d(TAG, "Prefer H264: applied=$applied codecs=${h264.size}")
+        } catch (t: Throwable) {
+            Log.w(TAG, "preferH264Codec error", t)
+        }
     }
 
     private fun iceFrom(
@@ -431,16 +454,16 @@ class ScreenCaptureService : Service() {
                 "quality" -> {
                     when (obj.optString("level")) {
                         "low" -> {
-                            applyEncoderQuality(scaleDownBy = 2.0,  maxBitrateKbps = 700,  maxFps = 20)
+                            applyEncoderQuality(scaleDownBy = 2.0, maxFps = 20)
                             applySenderParams(maxKbps = 700,  minKbps = 200, maxFps = 20, scaleDown = 2.0)
                         }
                         "mid" -> {
-                            applyEncoderQuality(scaleDownBy = 1.33, maxBitrateKbps = 1300, maxFps = 24)
-                            applySenderParams(maxKbps = 1300, minKbps = 400, maxFps = 24, scaleDown = 1.33)
+                            applyEncoderQuality(scaleDownBy = 1.33, maxFps = 30)
+                            applySenderParams(maxKbps = 1800, minKbps = 600, maxFps = 30, scaleDown = 1.33)
                         }
                         "high" -> {
-                            applyEncoderQuality(scaleDownBy = 1.0,  maxBitrateKbps = 2200, maxFps = 30)
-                            applySenderParams(maxKbps = 2200, minKbps = 600, maxFps = 30, scaleDown = 1.0)
+                            applyEncoderQuality(scaleDownBy = 1.0, maxFps = 30)
+                            applySenderParams(maxKbps = 2500, minKbps = 600, maxFps = 30, scaleDown = 1.0)
                         }
                     }
                 }
@@ -495,6 +518,7 @@ class ScreenCaptureService : Service() {
             var rttMs: Double? = null
             var qlim: String? = null
             var encoderImpl: String? = null
+            var packetsLost: Long? = null
 
             for (s in report.statsMap.values) {
                 when (s.type) {
@@ -504,6 +528,10 @@ class ScreenCaptureService : Service() {
                         (s.members["framesPerSecond"] as? Double)?.let { fps = it.toInt() }
                         (s.members["qualityLimitationReason"] as? String)?.let { qlim = it }
                         (s.members["encoderImplementation"] as? String)?.let { encoderImpl = it }
+                        (s.members["packetsLost"] as? Number)?.toLong()?.let { packetsLost = it }
+                    }
+                    "remote-inbound-rtp" -> {
+                        (s.members["packetsLost"] as? Number)?.toLong()?.let { packetsLost = it }
                     }
                     "candidate-pair" -> {
                         if (s.members["selected"] == true) {
@@ -518,9 +546,58 @@ class ScreenCaptureService : Service() {
                 .put("framesEncoded", framesEncoded)
                 .put("fps", fps ?: JSONObject.NULL)
                 .put("rttMs", rttMs ?: JSONObject.NULL)
+                .put("packetsLost", packetsLost ?: JSONObject.NULL)
                 .put("qualityLimitation", qlim ?: JSONObject.NULL)
                 .put("encoderImpl", encoderImpl ?: JSONObject.NULL)
             sendDc(js)
+        }
+    }
+
+    private fun startDebugStatsLoop() {
+        if (!BuildConfig.DEBUG) return
+        if (statsRunnable != null) return
+        statsRunnable = object : Runnable {
+            override fun run() {
+                logDebugStatsOnce()
+                mainHandler.postDelayed(this, 5_000)
+            }
+        }
+        mainHandler.postDelayed(statsRunnable!!, 5_000)
+    }
+
+    private fun logDebugStatsOnce() {
+        val pc = peerConnection ?: return
+        pc.getStats { report ->
+            var bytesSent = 0L
+            var fps: Int? = null
+            var rttMs: Double? = null
+            var qlim: String? = null
+            var packetsLost: Long? = null
+
+            for (s in report.statsMap.values) {
+                when (s.type) {
+                    "outbound-rtp" -> {
+                        (s.members["bytesSent"] as? Long)?.let { bytesSent = it }
+                        (s.members["framesPerSecond"] as? Double)?.let { fps = it.toInt() }
+                        (s.members["qualityLimitationReason"] as? String)?.let { qlim = it }
+                        (s.members["packetsLost"] as? Number)?.toLong()?.let { packetsLost = it }
+                    }
+                    "remote-inbound-rtp" -> {
+                        (s.members["packetsLost"] as? Number)?.toLong()?.let { packetsLost = it }
+                    }
+                    "candidate-pair" -> {
+                        if (s.members["selected"] == true) {
+                            (s.members["currentRoundTripTime"] as? Double)?.let { rttMs = it * 1000.0 }
+                        }
+                    }
+                }
+            }
+
+            Log.d(
+                TAG,
+                "stats fps=${fps ?: "-"} bytesSent=$bytesSent packetsLost=${packetsLost ?: "-"} " +
+                    "rttMs=${rttMs ?: "-"} qualityLimitation=${qlim ?: "-"}"
+            )
         }
     }
 
@@ -581,6 +658,8 @@ class ScreenCaptureService : Service() {
     private fun stopSelfSafe() {
         pingRunnable?.let { mainHandler.removeCallbacks(it) }
         pingRunnable = null
+        statsRunnable?.let { mainHandler.removeCallbacks(it) }
+        statsRunnable = null
         try { capturer?.stopCapture() } catch (_: Exception) {}
         try { capturer?.dispose() } catch (_: Exception) {}
         capturer = null
@@ -615,17 +694,41 @@ class ScreenCaptureService : Service() {
     override fun onBind(intent: Intent?): IBinder? = null
 
     private fun resolveCaptureSize(): Pair<Int, Int> {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+        val (rawWidth, rawHeight) = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
             val windowManager = getSystemService(WindowManager::class.java)
             if (windowManager != null) {
                 val bounds = windowManager.currentWindowMetrics.bounds
                 val width = (bounds.right - bounds.left).coerceAtLeast(1)
                 val height = (bounds.bottom - bounds.top).coerceAtLeast(1)
-                return width to height
+                width to height
+            } else {
+                val dm = resources.displayMetrics
+                dm.widthPixels.coerceAtLeast(1) to dm.heightPixels.coerceAtLeast(1)
             }
+        } else {
+            val dm = resources.displayMetrics
+            dm.widthPixels.coerceAtLeast(1) to dm.heightPixels.coerceAtLeast(1)
         }
-        val dm = resources.displayMetrics
-        return dm.widthPixels.coerceAtLeast(1) to dm.heightPixels.coerceAtLeast(1)
+
+        val maxLongSide = if (isHighEndDevice()) 1600 else 1280
+        val longSide = maxOf(rawWidth, rawHeight).toDouble()
+        val scale = minOf(1.0, maxLongSide / longSide)
+        var targetWidth = (rawWidth * scale).toInt().coerceAtLeast(1)
+        var targetHeight = (rawHeight * scale).toInt().coerceAtLeast(1)
+        if (targetWidth % 2 != 0) targetWidth = (targetWidth - 1).coerceAtLeast(1)
+        if (targetHeight % 2 != 0) targetHeight = (targetHeight - 1).coerceAtLeast(1)
+
+        Log.d(TAG, "Capture size raw=${rawWidth}x${rawHeight} target=${targetWidth}x${targetHeight}")
+        return targetWidth to targetHeight
+    }
+
+    private fun isHighEndDevice(): Boolean {
+        val am = getSystemService(ActivityManager::class.java) ?: return false
+        val memInfo = ActivityManager.MemoryInfo()
+        am.getMemoryInfo(memInfo)
+        val totalMemGb = memInfo.totalMem / (1024.0 * 1024.0 * 1024.0)
+        val cores = Runtime.getRuntime().availableProcessors()
+        return totalMemGb >= 6.0 && cores >= 8
     }
 }
 
