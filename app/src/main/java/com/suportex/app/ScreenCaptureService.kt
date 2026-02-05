@@ -330,18 +330,44 @@ class ScreenCaptureService : Service() {
         val sender = videoSender ?: return
         try {
             val transceiver = pc.transceivers.firstOrNull { it.sender == sender } ?: return
-            val caps = RtpReceiver.getCapabilities(MediaStreamTrack.MediaType.MEDIA_TYPE_VIDEO) ?: return
-            val h264 = caps.codecs.filter { it.name.equals("H264", true) }
-            if (h264.isEmpty()) return
-            val ordered = ArrayList<RtpCodecCapability>(caps.codecs.size).apply {
-                addAll(h264)
-                addAll(caps.codecs.filterNot { it.name.equals("H264", true) })
+            val caps = runCatching {
+                val receiverClass = Class.forName("org.webrtc.RtpReceiver")
+                val getCaps = receiverClass.methods.firstOrNull {
+                    it.name == "getCapabilities" && it.parameterTypes.size == 1
+                } ?: return@runCatching null
+                getCaps.invoke(null, MediaStreamTrack.MediaType.MEDIA_TYPE_VIDEO)
+            }.getOrNull() ?: return
+            val codecs = extractCodecCapabilities(caps) ?: return
+            val (h264, others) = codecs.partition { codec ->
+                val name = runCatching {
+                    codec.javaClass.methods.firstOrNull { it.name == "getName" }?.invoke(codec) as? String
+                }.getOrNull()
+                name?.equals("H264", ignoreCase = true) == true
             }
-            val applied = transceiver.setCodecPreferences(ordered)
+            if (h264.isEmpty()) return
+            val ordered = ArrayList<Any>(codecs.size).apply {
+                addAll(h264)
+                addAll(others)
+            }
+            val applied = runCatching {
+                transceiver.javaClass.methods.firstOrNull {
+                    it.name == "setCodecPreferences" && it.parameterTypes.size == 1
+                }?.invoke(transceiver, ordered) as? Boolean
+            }.getOrNull()
             Log.d(TAG, "Prefer H264: applied=$applied codecs=${h264.size}")
         } catch (t: Throwable) {
             Log.w(TAG, "preferH264Codec error", t)
         }
+    }
+
+    private fun extractCodecCapabilities(caps: Any): List<Any>? {
+        return runCatching {
+            val getter = caps.javaClass.methods.firstOrNull { it.name == "getCodecs" }
+            val codecs = getter?.invoke(caps)
+                ?: caps.javaClass.fields.firstOrNull { it.name == "codecs" }?.get(caps)
+            @Suppress("UNCHECKED_CAST")
+            codecs as? List<Any>
+        }.getOrNull()
     }
 
     private fun iceFrom(
