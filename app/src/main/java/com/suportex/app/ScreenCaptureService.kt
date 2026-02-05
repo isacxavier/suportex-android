@@ -7,6 +7,7 @@ import android.app.PendingIntent
 import android.app.Service
 import android.app.ActivityManager
 import android.content.Intent
+import android.content.pm.ApplicationInfo
 import android.media.projection.MediaProjection
 import android.os.Build
 import android.os.Handler
@@ -18,7 +19,6 @@ import androidx.core.app.NotificationCompat
 import com.google.firebase.firestore.DocumentChange
 import com.google.firebase.firestore.FieldValue
 import com.google.firebase.firestore.ListenerRegistration
-import com.suportex.app.BuildConfig
 import com.suportex.app.remote.RemoteCommandBus
 import com.suportex.app.remote.RemoteExecutor
 import com.suportex.app.data.FirebaseDataSource
@@ -581,7 +581,7 @@ class ScreenCaptureService : Service() {
     }
 
     private fun startDebugStatsLoop() {
-        if (!BuildConfig.DEBUG) return
+        if (!isDebugBuild()) return
         if (statsRunnable != null) return
         statsRunnable = object : Runnable {
             override fun run() {
@@ -756,6 +756,10 @@ class ScreenCaptureService : Service() {
         val totalMemGb = memInfo.totalMem / (1024.0 * 1024.0 * 1024.0)
         val cores = Runtime.getRuntime().availableProcessors()
         return totalMemGb >= 6.0 && cores >= 8
+    }
+
+    private fun isDebugBuild(): Boolean {
+        return (applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE) != 0
     }
 }
 
