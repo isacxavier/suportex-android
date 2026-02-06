@@ -111,11 +111,13 @@ fun SessionScreen(
         seconds / 3600, (seconds % 3600) / 60, seconds % 60
     )
 
-    // === Timer da ligação (só conta quando callConnected = true) ===
+    val callIsConnected = callConnected || callState == CallState.IN_CALL
+
+    // === Timer da ligação (só conta quando callIsConnected = true) ===
     var callSeconds by remember { mutableIntStateOf(0) }
 
-    LaunchedEffect(callConnected) {
-        if (callConnected) {
+    LaunchedEffect(callIsConnected) {
+        if (callIsConnected) {
             callSeconds = 0
             while (true) {
                 kotlinx.coroutines.delay(1_000)
@@ -179,13 +181,13 @@ fun SessionScreen(
     val statusColor = when {
         remoteEffective -> dangerRed
         isSharing       -> shareOrange
-        callConnected              -> callYellow             // só muda quando ACEITA
+        callIsConnected -> callYellow             // só muda quando ACEITA
         else            -> infoBlue
     }
     val statusText = when {
         remoteEffective -> "Compartilhamento + acesso remoto"
         isSharing       -> "Tela compartilhada"
-        callConnected              -> "Em chamada"
+        callIsConnected -> "Em chamada"
         else            -> "Atendimento via chat"
     }
 
@@ -458,7 +460,7 @@ fun SessionScreen(
             }
 
             // 2) EM CHAMADA, AINDA CONECTANDO (técnico não atendeu)
-            calling && !callConnected -> {
+            calling && !callIsConnected -> {
                 Button(
                     onClick = onEndCall, // permite cancelar enquanto chama
                     modifier = Modifier
@@ -478,7 +480,7 @@ fun SessionScreen(
             }
 
             // 3) EM CHAMADA E CONECTADO — botão + chip de tempo
-            else /* calling && callConnected */ -> {
+            else /* calling && callIsConnected */ -> {
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     verticalAlignment = Alignment.CenterVertically
