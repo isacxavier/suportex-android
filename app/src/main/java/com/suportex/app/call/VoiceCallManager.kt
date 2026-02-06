@@ -176,6 +176,7 @@ class VoiceCallManager(
                 .set(payload, SetOptions.merge())
         }
         cleanupCall()
+        updateState(CallState.IDLE, null)
     }
 
     fun release() {
