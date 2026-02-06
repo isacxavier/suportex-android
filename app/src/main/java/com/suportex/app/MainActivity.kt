@@ -2,8 +2,10 @@ package com.suportex.app
 
 import android.content.ClipData
 import android.content.ClipboardManager
+import android.content.pm.PackageManager
 import android.content.Intent
 import android.content.IntentFilter
+import android.Manifest
 import android.media.projection.MediaProjectionManager
 import android.os.Build
 import android.os.Bundle
@@ -36,6 +38,10 @@ import com.suportex.app.data.SessionRepository
 import com.suportex.app.data.SessionState
 import com.suportex.app.data.SessionTelemetry
 import com.suportex.app.data.SessionTechInfo
+import com.suportex.app.call.CallDirection
+import com.suportex.app.call.CallState
+import com.suportex.app.call.CallUiUpdate
+import com.suportex.app.call.VoiceCallManager
 import com.suportex.app.remote.AccessibilityUtils
 import com.suportex.app.remote.RemoteCommandBus
 import com.suportex.app.ui.screens.SessionScreen
@@ -74,9 +80,12 @@ class MainActivity : ComponentActivity() {
     private var setRemoteEnabledFromSocket: ((Boolean) -> Unit)? = null
     private var setCallingFromSocket: ((Boolean) -> Unit)? = null
     private var setCallConnectedFromSocket: ((Boolean) -> Unit)? = null
+    private var setCallStateFromManager: ((CallState) -> Unit)? = null
+    private var setCallDirectionFromManager: ((CallDirection?) -> Unit)? = null
 
     private var currentSessionId: String? = null
     private lateinit var socket: Socket
+    private lateinit var voiceCallManager: VoiceCallManager
 
     private var telemetryJob: Job? = null
     private var isSharingActive = false
@@ -84,6 +93,7 @@ class MainActivity : ComponentActivity() {
     private var callingActive = false
     private var callConnectedActive = false
     private var shareRequestFromCommand = false
+    private var pendingAudioAction: (() -> Unit)? = null
 
     // -------- Helpers --------
     @Suppress("unused")
@@ -216,6 +226,28 @@ class MainActivity : ComponentActivity() {
         }
         pushSessionState()
         emitTelemetry()
+    }
+
+    private fun handleCallUpdate(update: CallUiUpdate) {
+        val calling = update.state in setOf(
+            CallState.OUTGOING_RINGING,
+            CallState.INCOMING_RINGING,
+            CallState.CONNECTING,
+            CallState.IN_CALL
+        )
+        val connected = update.state == CallState.IN_CALL
+        updateCallState(calling = calling, connected = connected, origin = "webrtc")
+        runOnUiThread {
+            setCallStateFromManager?.invoke(update.state)
+            setCallDirectionFromManager?.invoke(update.direction)
+        }
+        when (update.state) {
+            CallState.DECLINED -> setSystemMessageFromLauncher?.invoke("Chamada recusada.")
+            CallState.TIMEOUT -> setSystemMessageFromLauncher?.invoke("Sem resposta.")
+            CallState.FAILED -> setSystemMessageFromLauncher?.invoke("Falha na chamada.")
+            CallState.ENDED -> setSystemMessageFromLauncher?.invoke("Chamada encerrada.")
+            else -> Unit
+        }
     }
 
     private fun emitTelemetry() {
@@ -355,21 +387,24 @@ class MainActivity : ComponentActivity() {
             setRemoteEnabledFromSocket?.invoke(false)
             setCallingFromSocket?.invoke(false)
             setCallConnectedFromSocket?.invoke(false)
+            setCallStateFromManager?.invoke(CallState.IDLE)
+            setCallDirectionFromManager?.invoke(null)
         }
     }
 
     private fun requestCallStart() {
-        sendCommand("call_start")
-        updateCallState(calling = true, connected = false, origin = "client")
+        ensureAudioPermission {
+            voiceCallManager.startOutgoingCall()
+        }
     }
 
     private fun requestCallEnd() {
-        sendCommand("call_end")
-        updateCallState(calling = false, connected = false, origin = "client")
+        voiceCallManager.endCall()
     }
 
     private fun finalizeSession() {
         stopTelemetryLoop()
+        voiceCallManager.release()
         resetSessionState()
         currentSessionId = null
         Conn.sessionId = null
@@ -451,6 +486,7 @@ class MainActivity : ComponentActivity() {
                     Conn.techName = tname
                     currentSessionId = sid
                     resetSessionState()
+                    voiceCallManager.bindSession(sid)
                     registerSessionStart(sid, tname)
                     pushSessionState()
                     val joinPayload = JSONObject().apply {
@@ -555,6 +591,26 @@ class MainActivity : ComponentActivity() {
         updateSharingState(active = false, origin = origin)
     }
 
+    private fun ensureAudioPermission(onGranted: () -> Unit) {
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
+            onGranted()
+        } else {
+            pendingAudioAction = onGranted
+            audioPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+        }
+    }
+
+    private val audioPermissionLauncher =
+        registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+            if (granted) {
+                pendingAudioAction?.invoke()
+                pendingAudioAction = null
+            } else {
+                pendingAudioAction = null
+                setSystemMessageFromLauncher?.invoke("Permissão de microfone negada.")
+            }
+        }
+
     private fun isAccessibilityServiceEnabled(): Boolean {
         return AccessibilityUtils.isServiceEnabled(this, com.suportex.app.remote.RemoteControlService::class.java)
     }
@@ -569,6 +625,12 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         mediaProjectionManager = getSystemService(MediaProjectionManager::class.java)
+
+        voiceCallManager = VoiceCallManager(
+            context = this,
+            scope = lifecycleScope,
+            onUpdate = ::handleCallUpdate
+        )
 
         connectSocket() // 🔌 conecta o Socket.IO assim que abrir o app
 
@@ -600,6 +662,8 @@ class MainActivity : ComponentActivity() {
                 var remoteEnabled by remember { mutableStateOf(false) }
                 var calling by remember { mutableStateOf(false) }
                 var callConnected by remember { mutableStateOf(false) }
+                var callState by remember { mutableStateOf(CallState.IDLE) }
+                var callDirection by remember { mutableStateOf<CallDirection?>(null) }
                 var systemMessage by remember { mutableStateOf<String?>(null) }
 
                 // Bridges Activity -> Compose
@@ -617,6 +681,8 @@ class MainActivity : ComponentActivity() {
                     setRemoteEnabledFromSocket = { remoteEnabled = it }
                     setCallingFromSocket = { calling = it }
                     setCallConnectedFromSocket = { callConnected = it }
+                    setCallStateFromManager = { callState = it }
+                    setCallDirectionFromManager = { callDirection = it }
                 }
 
                 Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
@@ -648,6 +714,8 @@ class MainActivity : ComponentActivity() {
                             remoteEnabled = remoteEnabled,
                             calling = calling,
                             callConnected = callConnected,
+                            callState = callState,
+                            callDirection = callDirection,
                             systemMessage = systemMessage,
                             onSystemMessageConsumed = { systemMessage = null },
                             onStartShare = { startScreenShareFlow() },
@@ -655,6 +723,12 @@ class MainActivity : ComponentActivity() {
                             onToggleRemote = { enable -> requestRemoteStateChange(enable) },
                             onStartCall = { requestCallStart() },
                             onEndCall = { requestCallEnd() },
+                            onAcceptCall = {
+                                ensureAudioPermission {
+                                    voiceCallManager.acceptIncomingCall()
+                                }
+                            },
+                            onDeclineCall = { voiceCallManager.declineIncomingCall() },
                             onEndSupport = {
                                 handleSessionEnded(fromCommand = false, reason = null)
                                 requestId = null
@@ -672,6 +746,7 @@ class MainActivity : ComponentActivity() {
     override fun onDestroy() {
         super.onDestroy()
         stopTelemetryLoop()
+        voiceCallManager.release()
     }
 }
 
