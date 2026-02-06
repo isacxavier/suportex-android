@@ -212,6 +212,7 @@ class VoiceCallManager(
                     remoteOfferApplied = false
                     remoteAnswerApplied = false
                     localAccepted = false
+                    pendingRemoteIceCandidates.clear()
                     cleanupPeerConnection()
                 }
 
@@ -288,6 +289,8 @@ class VoiceCallManager(
         }
         scheduleTimeout(cancelOnly = true)
         cleanupCall()
+        updateState(CallState.IDLE, null)
+        clearActiveCallDocument()
     }
 
     private fun scheduleTimeout(cancelOnly: Boolean = false) {
@@ -615,6 +618,17 @@ class VoiceCallManager(
         pendingRemoteIceCandidates.clear()
         direction = null
         cleanupPeerConnection()
+    }
+
+    private fun clearActiveCallDocument() {
+        val sid = sessionId ?: return
+        scope.launch(Dispatchers.IO) {
+            authRepository.ensureAnonAuth()
+            db.collection("sessions").document(sid)
+                .collection("call")
+                .document("active")
+                .delete()
+        }
     }
 
     private fun cleanupPeerConnection() {
