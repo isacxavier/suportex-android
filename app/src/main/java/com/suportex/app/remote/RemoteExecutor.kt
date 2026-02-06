@@ -434,9 +434,6 @@ object RemoteExecutor {
     }
 
     private fun resolveTappableArea(service: AccessibilityService): Rect {
-        if (captureFrameWidth > 0 && captureFrameHeight > 0) {
-            return Rect(0, 0, captureFrameWidth, captureFrameHeight)
-        }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
             val windowManager = service.getSystemService(WindowManager::class.java)
             if (windowManager != null) {
