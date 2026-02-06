@@ -81,6 +81,7 @@ class VoiceCallManager(
     private var offerSent = false
     private var remoteOfferApplied = false
     private var remoteAnswerApplied = false
+    private val pendingRemoteIceCandidates = mutableListOf<IceCandidate>()
 
     fun bindSession(sessionId: String?) {
         if (this.sessionId == sessionId) return
@@ -439,6 +440,7 @@ class VoiceCallManager(
             override fun onSetSuccess() {
                 remoteOfferApplied = true
                 Log.d(TAG, "CALL offer applied")
+                flushPendingRemoteIceCandidates()
                 pc.createAnswer(object : SdpObserver {
                     override fun onCreateSuccess(desc: SessionDescription) {
                         pc.setLocalDescription(object : SdpObserver {
@@ -482,6 +484,7 @@ class VoiceCallManager(
             override fun onSetSuccess() {
                 remoteAnswerApplied = true
                 Log.d(TAG, "CALL answer applied")
+                flushPendingRemoteIceCandidates()
             }
 
             override fun onSetFailure(error: String) {
@@ -517,11 +520,29 @@ class VoiceCallManager(
                         val sdpMid = data.getString("sdpMid")
                         val sdpMLineIndex = data.getLong("sdpMLineIndex")?.toInt() ?: 0
                         val candidate = IceCandidate(sdpMid, sdpMLineIndex, sdp)
-                        peerConnection?.addIceCandidate(candidate)
-                        Log.d(TAG, "CALL ICE remote applied")
+                        handleRemoteIceCandidate(candidate)
                     }
                 }
             }
+    }
+
+    private fun handleRemoteIceCandidate(candidate: IceCandidate) {
+        val pc = peerConnection ?: return
+        if (pc.remoteDescription == null) {
+            pendingRemoteIceCandidates.add(candidate)
+            Log.d(TAG, "CALL ICE remote buffered")
+            return
+        }
+        pc.addIceCandidate(candidate)
+        Log.d(TAG, "CALL ICE remote applied")
+    }
+
+    private fun flushPendingRemoteIceCandidates() {
+        val pc = peerConnection ?: return
+        if (pc.remoteDescription == null || pendingRemoteIceCandidates.isEmpty()) return
+        pendingRemoteIceCandidates.forEach { pc.addIceCandidate(it) }
+        pendingRemoteIceCandidates.clear()
+        Log.d(TAG, "CALL ICE remote flush complete")
     }
 
     private fun writeOffer(desc: SessionDescription) {
@@ -590,6 +611,7 @@ class VoiceCallManager(
         offerSent = false
         remoteOfferApplied = false
         remoteAnswerApplied = false
+        pendingRemoteIceCandidates.clear()
         direction = null
         cleanupPeerConnection()
     }
