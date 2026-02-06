@@ -310,6 +310,46 @@ class ScreenCaptureService : Service() {
         )
     }
 
+    private fun handleSignalOffer(sdp: String) {
+        if (sdp.isBlank()) return
+        val pc = peerConnection ?: return
+        remoteDescriptionSet = false
+        pendingRemoteIce.clear()
+        pc.setRemoteDescription(
+            object : SdpObserverAdapter() {
+                override fun onSetSuccess() {
+                    Log.d(TAG, "OFFER aplicada")
+                    remoteDescriptionSet = true
+                    pendingRemoteIce.forEach { safeAddIce(it) }
+                    pendingRemoteIce.clear()
+                    pc.createAnswer(object : SdpObserverAdapter() {
+                        override fun onCreateSuccess(answer: SessionDescription) {
+                            pc.setLocalDescription(object : SdpObserverAdapter() {
+                                override fun onSetSuccess() {
+                                    writeAnswerEvent(answer)
+                                    Log.d(TAG, "ANSWER enviada (${answer.description.length} chars)")
+                                }
+
+                                override fun onSetFailure(error: String) {
+                                    Log.e(TAG, "setLocalDescription fail: $error")
+                                }
+                            }, answer)
+                        }
+
+                        override fun onCreateFailure(error: String) {
+                            Log.e(TAG, "createAnswer fail: $error")
+                        }
+                    }, MediaConstraints())
+                }
+
+                override fun onSetFailure(error: String) {
+                    Log.e(TAG, "setRemoteDescription fail: $error")
+                }
+            },
+            SessionDescription(SessionDescription.Type.OFFER, sdp)
+        )
+    }
+
     private fun handleSignalCandidate(cand: IceCandidate?) {
         cand?.let {
             if (remoteDescriptionSet) safeAddIce(cand) else pendingRemoteIce.add(cand)
@@ -409,6 +449,18 @@ class ScreenCaptureService : Service() {
         db.collection("sessions").document(sid).collection("events").add(data)
     }
 
+    private fun writeAnswerEvent(sdp: SessionDescription) {
+        val sid = roomCode
+        if (sid.isBlank()) return
+        val data = mapOf(
+            "type" to "answer",
+            "from" to "client",
+            "sdp" to sdp.description,
+            "createdAt" to FieldValue.serverTimestamp()
+        )
+        db.collection("sessions").document(sid).collection("events").add(data)
+    }
+
     private fun listenToSignalEvents() {
         val sid = roomCode
         if (sid.isBlank()) return
@@ -428,6 +480,10 @@ class ScreenCaptureService : Service() {
                     val from = doc.getString("from") ?: ""
                     if (from == "client") continue
                     when (type) {
+                        "offer" -> {
+                            val sdp = doc.getString("sdp") ?: ""
+                            handleSignalOffer(sdp)
+                        }
                         "answer" -> {
                             val sdp = doc.getString("sdp") ?: ""
                             handleSignalAnswer(sdp)
