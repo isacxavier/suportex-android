@@ -46,6 +46,8 @@ import com.suportex.app.Conn
 import com.suportex.app.data.ChatRepository
 import com.suportex.app.data.model.Message
 import com.suportex.app.R
+import com.suportex.app.call.CallState
+import com.suportex.app.call.CallDirection
 import java.util.Locale
 import java.util.UUID
 import org.json.JSONObject
@@ -57,6 +59,8 @@ fun SessionScreen(
     remoteEnabled: Boolean,
     calling: Boolean,
     callConnected: Boolean,
+    callState: CallState,
+    callDirection: CallDirection?,
     // << novas props para centralizar mensagens vindas da Activity
     systemMessage: String? = null,
     onSystemMessageConsumed: () -> Unit = {},
@@ -65,6 +69,8 @@ fun SessionScreen(
     onToggleRemote: (Boolean) -> Unit,
     onStartCall: () -> Unit,
     onEndCall: () -> Unit,
+    onAcceptCall: () -> Unit,
+    onDeclineCall: () -> Unit,
     onEndSupport: () -> Unit
 ) {
     val chat = remember { ChatRepository() }
@@ -385,6 +391,48 @@ fun SessionScreen(
 
 // pode manter o espaçamento seguinte como estava, ou reduzir um pouco se quiser
         Spacer(Modifier.height(10.dp))
+
+        if (callState == CallState.INCOMING_RINGING && callDirection == CallDirection.TECH_TO_CLIENT) {
+            Surface(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(18.dp),
+                color = Color(0xFFFFF7E0),
+                tonalElevation = 0.dp,
+                shadowElevation = 1.dp,
+                border = BorderStroke(1.dp, borderSoft)
+            ) {
+                Column(Modifier.padding(14.dp)) {
+                    Text("Chamada recebida", fontWeight = FontWeight.Bold)
+                    Spacer(Modifier.height(10.dp))
+                    Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                        Button(
+                            onClick = onAcceptCall,
+                            modifier = Modifier.weight(1f).height(42.dp),
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = successGreen,
+                                contentColor = Color.White
+                            ),
+                            shape = RoundedCornerShape(21.dp)
+                        ) {
+                            Text("ACEITAR")
+                        }
+                        Button(
+                            onClick = onDeclineCall,
+                            modifier = Modifier.weight(1f).height(42.dp),
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = dangerRed,
+                                contentColor = Color.White
+                            ),
+                            shape = RoundedCornerShape(21.dp)
+                        ) {
+                            Text("RECUSAR")
+                        }
+                    }
+                }
+            }
+
+            Spacer(Modifier.height(10.dp))
+        }
 
         // BOTÃO DE CHAMADA — três estados: parado / chamando / conectado (com chip de tempo)
         when {
