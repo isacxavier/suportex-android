@@ -17,12 +17,12 @@ import kotlinx.coroutines.launch
 import org.webrtc.AudioSource
 import org.webrtc.AudioTrack
 import org.webrtc.IceCandidate
-import org.webrtc.JavaAudioDeviceModule
 import org.webrtc.MediaConstraints
 import org.webrtc.PeerConnection
 import org.webrtc.PeerConnectionFactory
 import org.webrtc.SessionDescription
 import org.webrtc.SdpObserver
+import org.webrtc.audio.JavaAudioDeviceModule
 
 enum class CallDirection(val raw: String) {
     CLIENT_TO_TECH("client_to_tech"),
@@ -30,7 +30,7 @@ enum class CallDirection(val raw: String) {
 
     companion object {
         fun fromRaw(raw: String?): CallDirection? =
-            values().firstOrNull { it.raw.equals(raw, ignoreCase = true) }
+            entries.firstOrNull { it.raw.equals(raw, ignoreCase = true) }
     }
 }
 
