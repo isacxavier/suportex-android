@@ -1,7 +1,9 @@
 package com.suportex.app.call
 
 import android.content.Context
+import android.media.AudioDeviceInfo
 import android.media.AudioManager
+import android.os.Build
 import android.util.Log
 import com.google.firebase.firestore.DocumentChange
 import com.google.firebase.firestore.ListenerRegistration
@@ -611,10 +613,25 @@ class VoiceCallManager(
         audioManager?.let {
             if (enable) {
                 it.mode = AudioManager.MODE_IN_COMMUNICATION
-                it.isSpeakerphoneOn = true
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                    val speakerDevice = it.availableCommunicationDevices.firstOrNull { device ->
+                        device.type == AudioDeviceInfo.TYPE_BUILTIN_SPEAKER
+                    }
+                    if (speakerDevice != null) {
+                        it.setCommunicationDevice(speakerDevice)
+                    }
+                } else {
+                    @Suppress("DEPRECATION")
+                    it.isSpeakerphoneOn = true
+                }
             } else {
                 it.mode = AudioManager.MODE_NORMAL
-                it.isSpeakerphoneOn = false
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                    it.clearCommunicationDevice()
+                } else {
+                    @Suppress("DEPRECATION")
+                    it.isSpeakerphoneOn = false
+                }
             }
         }
     }
