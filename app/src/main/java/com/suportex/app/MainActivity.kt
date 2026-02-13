@@ -331,24 +331,27 @@ class MainActivity : ComponentActivity() {
     private fun handleIncomingChat(obj: JSONObject) {
         val sid = currentSessionId ?: return
         val text = obj.optString("text", "").takeIf { it.isNotBlank() }
+        val imageUrl = obj.optString("imageUrl", "").takeIf { it.isNotBlank() }
         val fileUrl = obj.optString("fileUrl", "").takeIf { it.isNotBlank() }
         val audioUrl = obj.optString("audioUrl", "").takeIf { it.isNotBlank() }
         val createdAt = obj.optLong("ts", obj.optLong("createdAt", System.currentTimeMillis()))
         val stableId = obj.optString("id", "").takeIf { it.isNotBlank() }
-            ?: "${sid}:${obj.optString("from", "")}:${createdAt}:${text ?: fileUrl ?: audioUrl ?: ""}"
+            ?: "${sid}:${obj.optString("from", "")}:${createdAt}:${text ?: imageUrl ?: fileUrl ?: audioUrl ?: ""}"
         Log.d("ChatDedup", "origin=socket id=$stableId sessionId=$sid")
         val incomingType = obj.optString("type", "").takeIf { it.isNotBlank() } ?: when {
             audioUrl != null -> "audio"
-            fileUrl != null -> "image"
+            imageUrl != null || fileUrl != null -> "image"
             text != null -> "text"
             else -> "file"
         }
         val message = Message(
             id = stableId,
+            sessionId = obj.optString("sessionId", sid).takeIf { it.isNotBlank() } ?: sid,
             from = obj.optString("from", ""),
             fromName = obj.optString("fromName").takeIf { it.isNotBlank() },
             text = text,
-            fileUrl = fileUrl,
+            imageUrl = imageUrl ?: fileUrl,
+            fileUrl = fileUrl ?: imageUrl,
             audioUrl = audioUrl,
             type = incomingType,
             createdAt = createdAt
