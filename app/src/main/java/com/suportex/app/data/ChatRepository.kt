@@ -7,6 +7,7 @@ import com.suportex.app.data.model.Message
 import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.flow.callbackFlow
 import kotlinx.coroutines.suspendCancellableCoroutine
+import java.util.UUID
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 
@@ -23,7 +24,7 @@ class ChatRepository {
                 val list = snap?.documents?.map { doc ->
                     val data = doc.data ?: emptyMap()
                     Message(
-                        id = doc.id,
+                        id = (data["id"] as? String)?.takeIf { it.isNotBlank() } ?: doc.id,
                         from = data["from"] as? String ?: "",
                         fromName = data["fromName"] as? String?,
                         text = data["text"] as? String?,
@@ -49,8 +50,10 @@ class ChatRepository {
 
     suspend fun sendText(sessionId: String, from: String, text: String) {
         authRepository.ensureAnonAuth()
+        val messageId = UUID.randomUUID().toString()
         val timestamp = System.currentTimeMillis()
         val payload = buildMessagePayload(
+            id = messageId,
             from = from,
             fromName = null,
             text = text,
@@ -60,7 +63,7 @@ class ChatRepository {
             type = "text"
         )
         db.collection("sessions").document(sessionId)
-            .collection("messages").add(payload).await()
+            .collection("messages").document(messageId).set(payload).await()
     }
 
     suspend fun upsertIncoming(sessionId: String, message: Message) {
@@ -69,6 +72,7 @@ class ChatRepository {
             .collection("messages")
         val docId = message.id.takeIf { it.isNotBlank() } ?: collection.document().id
         val payload = buildMessagePayload(
+            id = docId,
             from = message.from,
             fromName = message.fromName,
             text = message.text,
@@ -86,12 +90,14 @@ class ChatRepository {
 
     suspend fun sendAttachment(sessionId: String, from: String, localUri: Uri): String {
         authRepository.ensureAnonAuth()
+        val messageId = UUID.randomUUID().toString()
         val timestamp = System.currentTimeMillis()
         val ref = storage.reference
             .child("sessions/$sessionId/attachments/$timestamp")
         ref.putFile(localUri).await()
         val url = ref.downloadUrl.await().toString()
         val payload = buildMessagePayload(
+            id = messageId,
             from = from,
             fromName = null,
             text = null,
@@ -101,18 +107,20 @@ class ChatRepository {
             type = "image"
         )
         db.collection("sessions").document(sessionId)
-            .collection("messages").add(payload).await()
+            .collection("messages").document(messageId).set(payload).await()
         return url
     }
 
     suspend fun sendAudio(sessionId: String, from: String, localUri: Uri): String {
         authRepository.ensureAnonAuth()
+        val messageId = UUID.randomUUID().toString()
         val timestamp = System.currentTimeMillis()
         val ref = storage.reference
             .child("sessions/$sessionId/audio/$timestamp.m4a")
         ref.putFile(localUri).await()
         val url = ref.downloadUrl.await().toString()
         val payload = buildMessagePayload(
+            id = messageId,
             from = from,
             fromName = null,
             text = null,
@@ -122,11 +130,12 @@ class ChatRepository {
             type = "audio"
         )
         db.collection("sessions").document(sessionId)
-            .collection("messages").add(payload).await()
+            .collection("messages").document(messageId).set(payload).await()
         return url
     }
 
     private fun buildMessagePayload(
+        id: String,
         from: String,
         fromName: String?,
         text: String?,
@@ -136,6 +145,7 @@ class ChatRepository {
         type: String?
     ): Map<String, Any?> {
         val payload = mutableMapOf<String, Any?>(
+            "id" to id,
             "from" to from,
             "ts" to timestamp,
             "createdAt" to timestamp,
