@@ -1,5 +1,6 @@
 package com.suportex.app.ui.screens
 
+import android.util.Log
 import android.widget.Toast
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Image
@@ -142,7 +143,18 @@ fun SessionScreen(
     val pendingMessages = remember { mutableStateListOf<Message>() }
     LaunchedEffect(sessionId) {
         if (sessionId != null) {
-            chat.observeMessages(sessionId).collect { messages = it }
+            chat.observeMessages(sessionId).collect { incoming ->
+                val deduped = incoming
+                    .asReversed()
+                    .associateBy { msg -> msg.id.ifBlank { "${msg.from}:${msg.createdAt}:${msg.text ?: msg.fileUrl ?: msg.audioUrl ?: ""}" } }
+                    .values
+                    .toList()
+                    .asReversed()
+                messages = deduped
+                deduped.forEach { msg ->
+                    Log.d("ChatDedup", "origin=firestore id=${msg.id} sessionId=$sessionId")
+                }
+            }
         } else {
             messages = emptyList()
             pendingMessages.clear()
@@ -676,6 +688,7 @@ fun SessionScreen(
                                     put("id", messageId)
                                     put("text", trimmed)
                                 }
+                                Log.d("ChatDedup", "origin=android-send id=$messageId sessionId=$sessionId")
                                 Conn.socket?.emit("session:chat:send", payload)
                                 input = ""
                                 focus.clearFocus()

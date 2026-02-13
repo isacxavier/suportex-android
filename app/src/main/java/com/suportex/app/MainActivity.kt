@@ -11,6 +11,7 @@ import android.os.Build
 import android.os.Bundle
 import android.os.BatteryManager
 import android.provider.Settings
+import android.util.Log
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -333,8 +334,11 @@ class MainActivity : ComponentActivity() {
         val fileUrl = obj.optString("fileUrl", "").takeIf { it.isNotBlank() }
         val audioUrl = obj.optString("audioUrl", "").takeIf { it.isNotBlank() }
         val createdAt = obj.optLong("ts", obj.optLong("createdAt", System.currentTimeMillis()))
+        val stableId = obj.optString("id", "").takeIf { it.isNotBlank() }
+            ?: "${sid}:${obj.optString("from", "")}:${createdAt}:${text ?: fileUrl ?: audioUrl ?: ""}"
+        Log.d("ChatDedup", "origin=socket id=$stableId sessionId=$sid")
         val message = Message(
-            id = obj.optString("id", ""),
+            id = stableId,
             from = obj.optString("from", ""),
             fromName = obj.optString("fromName").takeIf { it.isNotBlank() },
             text = text,
