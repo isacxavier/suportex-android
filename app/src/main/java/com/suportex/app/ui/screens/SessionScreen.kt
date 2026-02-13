@@ -598,9 +598,31 @@ fun SessionScreen(
                                 shadowElevation = 0.dp
                             ) {
                                 Column(Modifier.padding(horizontal = 14.dp, vertical = 10.dp)) {
-                                    m.text?.let { Text(it) }
-                                    m.audioUrl?.let { Text("🎤 Áudio", color = infoBlue) }
-                                    m.fileUrl?.let { Text("📎 Anexo", color = infoBlue) }
+                                    val messageType = m.type.lowercase()
+                                    val hasText = !m.text.isNullOrBlank()
+                                    val hasAudio = !m.audioUrl.isNullOrBlank()
+                                    val hasFile = !m.fileUrl.isNullOrBlank()
+
+                                    when {
+                                        messageType == "audio" && hasAudio -> {
+                                            Text("🎤 Áudio", color = infoBlue)
+                                            if (hasText) Text(m.text!!)
+                                        }
+
+                                        messageType == "image" && hasFile -> {
+                                            Text("📷 Imagem", color = infoBlue)
+                                            if (hasText) Text(m.text!!)
+                                        }
+
+                                        messageType == "file" && hasFile -> {
+                                            Text("📎 Anexo", color = infoBlue)
+                                            if (hasText) Text(m.text!!)
+                                        }
+
+                                        else -> {
+                                            if (hasText) Text(m.text!!)
+                                        }
+                                    }
                                 }
                             }
                         }
