@@ -6,6 +6,8 @@ import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.gestures.rememberTransformableState
+import androidx.compose.foundation.gestures.transformable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -13,8 +15,10 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.clickable
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AttachFile
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.Phone
 import androidx.compose.material3.*
@@ -37,6 +41,8 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
@@ -52,6 +58,7 @@ import com.suportex.app.call.CallDirection
 import com.suportex.app.ui.session.AudioMessagePlayer
 import com.suportex.app.ui.session.UploadingAudioPlaceholder
 import com.suportex.app.ui.session.rememberAudioPlaybackController
+import coil.compose.AsyncImage
 import java.util.Locale
 import java.util.UUID
 import org.json.JSONObject
@@ -147,6 +154,8 @@ fun SessionScreen(
         "%02d:%02d:%02d",
         callSeconds / 3600, (callSeconds % 3600) / 60, callSeconds % 60
     )
+
+    var previewImageUrl by remember { mutableStateOf<String?>(null) }
 
     // mensagens
     var messages by remember { mutableStateOf<List<Message>>(emptyList()) }
@@ -628,7 +637,13 @@ fun SessionScreen(
                                         }
 
                                         messageType == "image" && hasFile -> {
-                                            Text("📷 Imagem", color = infoBlue)
+                                            Text(
+                                                text = "📷 Imagem",
+                                                color = infoBlue,
+                                                modifier = Modifier.clickable {
+                                                    previewImageUrl = m.fileUrl
+                                                }
+                                            )
                                             if (hasText) Text(m.text!!)
                                         }
 
@@ -687,7 +702,8 @@ fun SessionScreen(
                                         Icons.Default.Mic,
                                         contentDescription = "Áudio",
                                         tint = if (isRecordingAudio) dangerRed else LocalContentColor.current
-                                    )
+        )
+
                                 }
                                 IconButton(onClick = onAttachmentClick, enabled = sessionId != null) {
                                     Icon(Icons.Default.AttachFile, contentDescription = "Anexo")
@@ -751,6 +767,13 @@ fun SessionScreen(
             }
         }
 
+        if (!previewImageUrl.isNullOrBlank()) {
+            ImagePreviewDialog(
+                imageUrl = previewImageUrl!!,
+                onDismiss = { previewImageUrl = null }
+            )
+        }
+
         Spacer(Modifier.height(14.dp))
 
         // ENCERRAR SUPORTE
@@ -760,5 +783,59 @@ fun SessionScreen(
             shape = RoundedCornerShape(32.dp),
             colors = ButtonDefaults.buttonColors(containerColor = dangerRed, contentColor = Color.White)
         ) { Text("ENCERRAR SUPORTE") }
+    }
+}
+
+@Composable
+private fun ImagePreviewDialog(
+    imageUrl: String,
+    onDismiss: () -> Unit
+) {
+    Dialog(
+        onDismissRequest = onDismiss,
+        properties = DialogProperties(usePlatformDefaultWidth = false)
+    ) {
+        var scale by remember { mutableFloatStateOf(1f) }
+        var offsetX by remember { mutableFloatStateOf(0f) }
+        var offsetY by remember { mutableFloatStateOf(0f) }
+        val transformState = rememberTransformableState { zoomChange, panChange, _ ->
+            scale = (scale * zoomChange).coerceIn(1f, 4f)
+            offsetX += panChange.x
+            offsetY += panChange.y
+        }
+
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(Color.Black)
+        ) {
+            AsyncImage(
+                model = imageUrl,
+                contentDescription = "Preview da imagem",
+                contentScale = ContentScale.Fit,
+                modifier = Modifier
+                    .fillMaxSize()
+                    .transformable(state = transformState)
+                    .graphicsLayer {
+                        scaleX = scale
+                        scaleY = scale
+                        translationX = offsetX
+                        translationY = offsetY
+                    }
+            )
+
+            IconButton(
+                onClick = onDismiss,
+                modifier = Modifier
+                    .align(Alignment.TopEnd)
+                    .padding(16.dp)
+            ) {
+                Icon(
+                    imageVector = Icons.Filled.Close,
+                    contentDescription = "Fechar preview",
+                    tint = Color.White
+                )
+            }
+        }
     }
 }
