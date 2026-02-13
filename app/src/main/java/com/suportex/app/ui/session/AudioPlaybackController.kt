@@ -32,9 +32,11 @@ class AudioPlaybackController(context: Context) {
         override fun onPlaybackStateChanged(playbackState: Int) {
             durationMs = exoPlayer.duration.coerceAtLeast(0L)
             if (playbackState == Player.STATE_ENDED) {
+                exoPlayer.playWhenReady = false
+                exoPlayer.pause()
+                exoPlayer.seekTo(0L)
                 positionMs = 0L
                 isPlaying = false
-                exoPlayer.seekTo(0L)
             }
         }
 
@@ -45,6 +47,7 @@ class AudioPlaybackController(context: Context) {
     }
 
     init {
+        exoPlayer.repeatMode = Player.REPEAT_MODE_OFF
         exoPlayer.addListener(listener)
     }
 
