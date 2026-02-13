@@ -50,7 +50,10 @@ import io.socket.client.Socket
 import okhttp3.*
 import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
+import android.net.Uri
+import android.media.MediaRecorder
 import org.json.JSONObject
+import java.io.File
 import java.util.UUID
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -82,6 +85,7 @@ class MainActivity : ComponentActivity() {
     private var setCallConnectedFromSocket: ((Boolean) -> Unit)? = null
     private var setCallStateFromManager: ((CallState) -> Unit)? = null
     private var setCallDirectionFromManager: ((CallDirection?) -> Unit)? = null
+    private var setRecordingAudioFromActivity: ((Boolean) -> Unit)? = null
 
     private var currentSessionId: String? = null
     private lateinit var socket: Socket
@@ -94,6 +98,8 @@ class MainActivity : ComponentActivity() {
     private var callConnectedActive = false
     private var shareRequestFromCommand = false
     private var pendingAudioAction: (() -> Unit)? = null
+    private var mediaRecorder: MediaRecorder? = null
+    private var audioTempFile: File? = null
 
     // -------- Helpers --------
     @Suppress("unused")
@@ -402,6 +408,94 @@ class MainActivity : ComponentActivity() {
         voiceCallManager.endCall()
     }
 
+    private fun handleAttachmentPick(uri: Uri) {
+        val sid = currentSessionId
+        if (sid.isNullOrBlank()) {
+            setSystemMessageFromLauncher?.invoke("Sessão ainda não aceita pelo técnico.")
+            return
+        }
+        lifecycleScope.launch(Dispatchers.IO) {
+            val result = runCatching {
+                Conn.chatRepository?.sendAttachment(sid, from = "client", localUri = uri)
+            }
+            runOnUiThread {
+                if (result.isSuccess) {
+                    setSystemMessageFromLauncher?.invoke("Imagem enviada.")
+                } else {
+                    setSystemMessageFromLauncher?.invoke("Falha ao enviar anexo.")
+                }
+            }
+        }
+    }
+
+    private fun startAudioRecording() {
+        val sid = currentSessionId
+        if (sid.isNullOrBlank()) {
+            setSystemMessageFromLauncher?.invoke("Sessão ainda não aceita pelo técnico.")
+            return
+        }
+        runCatching {
+            val outFile = File.createTempFile("sx_audio_", ".m4a", cacheDir)
+            audioTempFile = outFile
+            val recorder = MediaRecorder().apply {
+                setAudioSource(MediaRecorder.AudioSource.MIC)
+                setOutputFormat(MediaRecorder.OutputFormat.MPEG_4)
+                setAudioEncoder(MediaRecorder.AudioEncoder.AAC)
+                setAudioSamplingRate(44100)
+                setAudioEncodingBitRate(96000)
+                setOutputFile(outFile.absolutePath)
+                prepare()
+                start()
+            }
+            mediaRecorder = recorder
+            setRecordingAudioFromActivity?.invoke(true)
+            setSystemMessageFromLauncher?.invoke("Gravando áudio… Toque novamente para enviar.")
+        }.onFailure {
+            mediaRecorder = null
+            audioTempFile = null
+            setRecordingAudioFromActivity?.invoke(false)
+            setSystemMessageFromLauncher?.invoke("Falha ao iniciar gravação de áudio.")
+        }
+    }
+
+    private fun stopAudioRecordingAndSend() {
+        val sid = currentSessionId
+        if (sid.isNullOrBlank()) {
+            setRecordingAudioFromActivity?.invoke(false)
+            return
+        }
+        val recorder = mediaRecorder ?: return
+        val outFile = audioTempFile
+        runCatching {
+            recorder.stop()
+            recorder.reset()
+            recorder.release()
+        }
+        mediaRecorder = null
+        setRecordingAudioFromActivity?.invoke(false)
+
+        val file = outFile
+        if (file == null || !file.exists()) {
+            setSystemMessageFromLauncher?.invoke("Arquivo de áudio não encontrado.")
+            return
+        }
+
+        lifecycleScope.launch(Dispatchers.IO) {
+            val result = runCatching {
+                Conn.chatRepository?.sendAudio(sid, from = "client", localUri = Uri.fromFile(file))
+            }
+            runOnUiThread {
+                if (result.isSuccess) {
+                    setSystemMessageFromLauncher?.invoke("Áudio enviado.")
+                } else {
+                    setSystemMessageFromLauncher?.invoke("Falha ao enviar áudio.")
+                }
+            }
+            runCatching { file.delete() }
+            audioTempFile = null
+        }
+    }
+
     private fun finalizeSession() {
         stopTelemetryLoop()
         voiceCallManager.release()
@@ -611,6 +705,11 @@ class MainActivity : ComponentActivity() {
             }
         }
 
+    private val attachmentPickerLauncher =
+        registerForActivityResult(ActivityResultContracts.GetContent()) { uri ->
+            uri?.let { handleAttachmentPick(it) }
+        }
+
     private fun isAccessibilityServiceEnabled(): Boolean {
         return AccessibilityUtils.isServiceEnabled(this, com.suportex.app.remote.RemoteControlService::class.java)
     }
@@ -665,6 +764,7 @@ class MainActivity : ComponentActivity() {
                 var callState by remember { mutableStateOf(CallState.IDLE) }
                 var callDirection by remember { mutableStateOf<CallDirection?>(null) }
                 var systemMessage by remember { mutableStateOf<String?>(null) }
+                var isRecordingAudio by remember { mutableStateOf(false) }
 
                 // Bridges Activity -> Compose
                 LaunchedEffect(Unit) {
@@ -683,6 +783,7 @@ class MainActivity : ComponentActivity() {
                     setCallConnectedFromSocket = { callConnected = it }
                     setCallStateFromManager = { callState = it }
                     setCallDirectionFromManager = { callDirection = it }
+                    setRecordingAudioFromActivity = { isRecordingAudio = it }
                 }
 
                 Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
@@ -729,6 +830,23 @@ class MainActivity : ComponentActivity() {
                                 }
                             },
                             onDeclineCall = { voiceCallManager.declineIncomingCall() },
+                            onAudioClick = {
+                                ensureAudioPermission {
+                                    if (mediaRecorder == null) {
+                                        startAudioRecording()
+                                    } else {
+                                        stopAudioRecordingAndSend()
+                                    }
+                                }
+                            },
+                            onAttachmentClick = {
+                                if (sessionId == null) {
+                                    systemMessage = "Sessão ainda não aceita pelo técnico."
+                                } else {
+                                    attachmentPickerLauncher.launch("image/*")
+                                }
+                            },
+                            isRecordingAudio = isRecordingAudio,
                             onEndSupport = {
                                 handleSessionEnded(fromCommand = false, reason = null)
                                 requestId = null
@@ -745,6 +863,13 @@ class MainActivity : ComponentActivity() {
 
     override fun onDestroy() {
         super.onDestroy()
+        runCatching {
+            mediaRecorder?.apply {
+                reset()
+                release()
+            }
+        }
+        mediaRecorder = null
         stopTelemetryLoop()
         voiceCallManager.release()
     }
