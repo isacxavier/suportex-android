@@ -24,18 +24,21 @@ class ChatRepository {
                 val list = snap?.documents?.map { doc ->
                     val data = doc.data ?: emptyMap()
                     val text = (data["text"] as? String)?.takeIf { it.isNotBlank() }
+                    val imageUrl = (data["imageUrl"] as? String)?.takeIf { it.isNotBlank() }
                     val fileUrl = (data["fileUrl"] as? String)?.takeIf { it.isNotBlank() }
                     val audioUrl = (data["audioUrl"] as? String)?.takeIf { it.isNotBlank() }
                     Message(
                         id = (data["id"] as? String)?.takeIf { it.isNotBlank() } ?: doc.id,
+                        sessionId = (data["sessionId"] as? String)?.takeIf { it.isNotBlank() } ?: sessionId,
                         from = data["from"] as? String ?: "",
                         fromName = data["fromName"] as? String?,
                         text = text,
-                        fileUrl = fileUrl,
+                        imageUrl = imageUrl ?: fileUrl,
+                        fileUrl = fileUrl ?: imageUrl,
                         audioUrl = audioUrl,
                         type = data["type"] as? String ?: when {
                             audioUrl != null -> "audio"
-                            fileUrl != null -> "image"
+                            imageUrl != null || fileUrl != null -> "image"
                             text != null -> "text"
                             else -> "file"
                         },
@@ -56,10 +59,12 @@ class ChatRepository {
         val messageId = UUID.randomUUID().toString()
         val timestamp = System.currentTimeMillis()
         val payload = buildMessagePayload(
+            sessionId = sessionId,
             id = messageId,
             from = from,
             fromName = null,
             text = text,
+            imageUrl = null,
             fileUrl = null,
             audioUrl = null,
             timestamp = timestamp,
@@ -75,11 +80,13 @@ class ChatRepository {
             .collection("messages")
         val docId = message.id.takeIf { it.isNotBlank() } ?: collection.document().id
         val payload = buildMessagePayload(
+            sessionId = sessionId,
             id = docId,
             from = message.from,
             fromName = message.fromName,
             text = message.text,
-            fileUrl = message.fileUrl,
+            imageUrl = message.imageUrl ?: message.fileUrl,
+            fileUrl = message.fileUrl ?: message.imageUrl,
             audioUrl = message.audioUrl,
             timestamp = message.createdAt,
             type = message.type
@@ -100,10 +107,12 @@ class ChatRepository {
         ref.putFile(localUri).await()
         val url = ref.downloadUrl.await().toString()
         val payload = buildMessagePayload(
+            sessionId = sessionId,
             id = messageId,
             from = from,
             fromName = null,
             text = null,
+            imageUrl = url,
             fileUrl = url,
             audioUrl = null,
             timestamp = timestamp,
@@ -123,10 +132,12 @@ class ChatRepository {
         ref.putFile(localUri).await()
         val url = ref.downloadUrl.await().toString()
         val payload = buildMessagePayload(
+            sessionId = sessionId,
             id = messageId,
             from = from,
             fromName = null,
             text = null,
+            imageUrl = null,
             fileUrl = null,
             audioUrl = url,
             timestamp = timestamp,
@@ -138,10 +149,12 @@ class ChatRepository {
     }
 
     private fun buildMessagePayload(
+        sessionId: String,
         id: String,
         from: String,
         fromName: String?,
         text: String?,
+        imageUrl: String?,
         fileUrl: String?,
         audioUrl: String?,
         timestamp: Long,
@@ -149,12 +162,13 @@ class ChatRepository {
     ): Map<String, Any?> {
         val payload = mutableMapOf<String, Any?>(
             "id" to id,
+            "sessionId" to sessionId,
             "from" to from,
             "ts" to timestamp,
             "createdAt" to timestamp,
             "type" to (type ?: when {
                 audioUrl != null -> "audio"
-                fileUrl != null -> "image"
+                imageUrl != null || fileUrl != null -> "image"
                 text != null -> "text"
                 else -> "file"
             }),
@@ -162,6 +176,7 @@ class ChatRepository {
         )
         fromName?.let { payload["fromName"] = it }
         text?.let { payload["text"] = it }
+        imageUrl?.let { payload["imageUrl"] = it }
         fileUrl?.let { payload["fileUrl"] = it }
         audioUrl?.let { payload["audioUrl"] = it }
         return payload
