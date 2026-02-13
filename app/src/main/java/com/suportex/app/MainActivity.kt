@@ -337,6 +337,12 @@ class MainActivity : ComponentActivity() {
         val stableId = obj.optString("id", "").takeIf { it.isNotBlank() }
             ?: "${sid}:${obj.optString("from", "")}:${createdAt}:${text ?: fileUrl ?: audioUrl ?: ""}"
         Log.d("ChatDedup", "origin=socket id=$stableId sessionId=$sid")
+        val incomingType = obj.optString("type", "").takeIf { it.isNotBlank() } ?: when {
+            audioUrl != null -> "audio"
+            fileUrl != null -> "image"
+            text != null -> "text"
+            else -> "file"
+        }
         val message = Message(
             id = stableId,
             from = obj.optString("from", ""),
@@ -344,6 +350,7 @@ class MainActivity : ComponentActivity() {
             text = text,
             fileUrl = fileUrl,
             audioUrl = audioUrl,
+            type = incomingType,
             createdAt = createdAt
         )
         lifecycleScope.launch(Dispatchers.IO) {

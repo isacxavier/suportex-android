@@ -23,17 +23,20 @@ class ChatRepository {
             .addSnapshotListener { snap, _ ->
                 val list = snap?.documents?.map { doc ->
                     val data = doc.data ?: emptyMap()
+                    val text = (data["text"] as? String)?.takeIf { it.isNotBlank() }
+                    val fileUrl = (data["fileUrl"] as? String)?.takeIf { it.isNotBlank() }
+                    val audioUrl = (data["audioUrl"] as? String)?.takeIf { it.isNotBlank() }
                     Message(
                         id = (data["id"] as? String)?.takeIf { it.isNotBlank() } ?: doc.id,
                         from = data["from"] as? String ?: "",
                         fromName = data["fromName"] as? String?,
-                        text = data["text"] as? String?,
-                        fileUrl = data["fileUrl"] as? String?,
-                        audioUrl = data["audioUrl"] as? String?,
+                        text = text,
+                        fileUrl = fileUrl,
+                        audioUrl = audioUrl,
                         type = data["type"] as? String ?: when {
-                            (data["audioUrl"] as? String).isNullOrBlank().not() -> "audio"
-                            (data["fileUrl"] as? String).isNullOrBlank().not() -> "image"
-                            (data["text"] as? String).isNullOrBlank().not() -> "text"
+                            audioUrl != null -> "audio"
+                            fileUrl != null -> "image"
+                            text != null -> "text"
                             else -> "file"
                         },
                         status = data["status"] as? String ?: "sent",
