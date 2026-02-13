@@ -49,6 +49,9 @@ import com.suportex.app.data.model.Message
 import com.suportex.app.R
 import com.suportex.app.call.CallState
 import com.suportex.app.call.CallDirection
+import com.suportex.app.ui.session.AudioMessagePlayer
+import com.suportex.app.ui.session.UploadingAudioPlaceholder
+import com.suportex.app.ui.session.rememberAudioPlaybackController
 import java.util.Locale
 import java.util.UUID
 import org.json.JSONObject
@@ -88,6 +91,13 @@ fun SessionScreen(
     }
     val focus = LocalFocusManager.current
     val ctx = LocalContext.current
+    val audioPlaybackController = rememberAudioPlaybackController()
+
+    DisposableEffect(Unit) {
+        onDispose {
+            audioPlaybackController.stop()
+        }
+    }
 
     // Toast "deduper"
     data class ToastGuard(var last: String? = null, var at: Long = 0L)
@@ -605,7 +615,15 @@ fun SessionScreen(
 
                                     when {
                                         messageType == "audio" && hasAudio -> {
-                                            Text("🎤 Áudio", color = infoBlue)
+                                            AudioMessagePlayer(
+                                                audioUrl = m.audioUrl!!,
+                                                controller = audioPlaybackController
+                                            )
+                                            if (hasText) Text(m.text!!)
+                                        }
+
+                                        messageType == "audio" -> {
+                                            UploadingAudioPlaceholder()
                                             if (hasText) Text(m.text!!)
                                         }
 
