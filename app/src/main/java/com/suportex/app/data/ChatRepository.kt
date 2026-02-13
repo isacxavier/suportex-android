@@ -29,6 +29,13 @@ class ChatRepository {
                         text = data["text"] as? String?,
                         fileUrl = data["fileUrl"] as? String?,
                         audioUrl = data["audioUrl"] as? String?,
+                        type = data["type"] as? String ?: when {
+                            (data["audioUrl"] as? String).isNullOrBlank().not() -> "audio"
+                            (data["fileUrl"] as? String).isNullOrBlank().not() -> "image"
+                            (data["text"] as? String).isNullOrBlank().not() -> "text"
+                            else -> "file"
+                        },
+                        status = data["status"] as? String ?: "sent",
                         createdAt = when (val ts = data["ts"] ?: data["createdAt"]) {
                             is Number -> ts.toLong()
                             else -> System.currentTimeMillis()
@@ -49,7 +56,8 @@ class ChatRepository {
             text = text,
             fileUrl = null,
             audioUrl = null,
-            timestamp = timestamp
+            timestamp = timestamp,
+            type = "text"
         )
         db.collection("sessions").document(sessionId)
             .collection("messages").add(payload).await()
@@ -66,12 +74,17 @@ class ChatRepository {
             text = message.text,
             fileUrl = message.fileUrl,
             audioUrl = message.audioUrl,
-            timestamp = message.createdAt
+            timestamp = message.createdAt,
+            type = message.type
         )
         collection.document(docId).set(payload).await()
     }
 
-    suspend fun sendFile(sessionId: String, from: String, localUri: Uri): String {
+    suspend fun sendFile(sessionId: String, from: String, localUri: Uri): String =
+        sendAttachment(sessionId = sessionId, from = from, localUri = localUri)
+
+
+    suspend fun sendAttachment(sessionId: String, from: String, localUri: Uri): String {
         authRepository.ensureAnonAuth()
         val timestamp = System.currentTimeMillis()
         val ref = storage.reference
@@ -84,7 +97,29 @@ class ChatRepository {
             text = null,
             fileUrl = url,
             audioUrl = null,
-            timestamp = timestamp
+            timestamp = timestamp,
+            type = "image"
+        )
+        db.collection("sessions").document(sessionId)
+            .collection("messages").add(payload).await()
+        return url
+    }
+
+    suspend fun sendAudio(sessionId: String, from: String, localUri: Uri): String {
+        authRepository.ensureAnonAuth()
+        val timestamp = System.currentTimeMillis()
+        val ref = storage.reference
+            .child("sessions/$sessionId/audio/$timestamp.m4a")
+        ref.putFile(localUri).await()
+        val url = ref.downloadUrl.await().toString()
+        val payload = buildMessagePayload(
+            from = from,
+            fromName = null,
+            text = null,
+            fileUrl = null,
+            audioUrl = url,
+            timestamp = timestamp,
+            type = "audio"
         )
         db.collection("sessions").document(sessionId)
             .collection("messages").add(payload).await()
@@ -97,12 +132,20 @@ class ChatRepository {
         text: String?,
         fileUrl: String?,
         audioUrl: String?,
-        timestamp: Long
+        timestamp: Long,
+        type: String?
     ): Map<String, Any?> {
         val payload = mutableMapOf<String, Any?>(
             "from" to from,
             "ts" to timestamp,
-            "createdAt" to timestamp
+            "createdAt" to timestamp,
+            "type" to (type ?: when {
+                audioUrl != null -> "audio"
+                fileUrl != null -> "image"
+                text != null -> "text"
+                else -> "file"
+            }),
+            "status" to "sent"
         )
         fromName?.let { payload["fromName"] = it }
         text?.let { payload["text"] = it }

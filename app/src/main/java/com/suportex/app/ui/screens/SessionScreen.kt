@@ -71,6 +71,9 @@ fun SessionScreen(
     onEndCall: () -> Unit,
     onAcceptCall: () -> Unit,
     onDeclineCall: () -> Unit,
+    onAudioClick: () -> Unit,
+    onAttachmentClick: () -> Unit,
+    isRecordingAudio: Boolean,
     onEndSupport: () -> Unit
 ) {
     val chat = remember { ChatRepository() }
@@ -584,6 +587,7 @@ fun SessionScreen(
                             ) {
                                 Column(Modifier.padding(horizontal = 14.dp, vertical = 10.dp)) {
                                     m.text?.let { Text(it) }
+                                    m.audioUrl?.let { Text("🎤 Áudio", color = infoBlue) }
                                     m.fileUrl?.let { Text("📎 Anexo", color = infoBlue) }
                                 }
                             }
@@ -626,10 +630,14 @@ fun SessionScreen(
 
                         trailingIcon = {
                             Row(verticalAlignment = Alignment.CenterVertically) {
-                                IconButton(onClick = { /* áudio futuro */ }, enabled = sessionId != null) {
-                                    Icon(Icons.Default.Mic, contentDescription = "Áudio")
+                                IconButton(onClick = onAudioClick, enabled = sessionId != null) {
+                                    Icon(
+                                        Icons.Default.Mic,
+                                        contentDescription = "Áudio",
+                                        tint = if (isRecordingAudio) dangerRed else LocalContentColor.current
+                                    )
                                 }
-                                IconButton(onClick = { /* anexo futuro */ }, enabled = sessionId != null) {
+                                IconButton(onClick = onAttachmentClick, enabled = sessionId != null) {
                                     Icon(Icons.Default.AttachFile, contentDescription = "Anexo")
                                 }
                             }
